@@ -1,0 +1,7 @@
+PyQt6
+matplotlib
+numpy
+openpyxl
+pandas
+rapidfuzz
+yfinance

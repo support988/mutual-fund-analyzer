@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+exports/
+*.xlsx
+
+crash_report.log
+
+build/
+dist/
+*.spec
+
+.venv/
+venv/
+
+.vscode/
+.idea/
