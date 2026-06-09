@@ -52,11 +52,15 @@ def parse_mf_csv(file_path):
                 pass
         
         df = df.rename(columns=date_mapping)
-        actual_date_cols = list(date_mapping.values())
+        actual_date_cols = list(set(date_mapping.values())) # Use set to remove duplicates
         
         # Drop trailing unnamed columns created by trailing commas in CSV header
         df = df[[c for c in df.columns if not str(c).startswith('Unnamed:')]]
         actual_date_cols = [c for c in actual_date_cols if c in df.columns]
+
+        # Handle potential duplicate date columns by keeping the first one
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated()]
         
         # Data Cleaning:
         # 1. Skip rows where Name is blank or Type is "Net CA & Others"

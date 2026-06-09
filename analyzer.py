@@ -180,10 +180,19 @@ class MFAnalyzer:
         for name in fund_names:
             info = self.funds[name]
             df = info['df']
-            latest_date = max(info['dates'])
-            holdings = df[(df['Type'] == asset_type_filter) & (df[latest_date] > 0)][['Name', latest_date]].copy()
-            holdings.columns = ['Name', 'Allocation']
-            latest_holdings[name] = holdings
+            available_dates = info['dates']
+            target_date = max(available_dates) if available_dates else None
+
+            if target_date and target_date in df.columns:
+                mask = df[target_date] > 0
+                if asset_type_filter:
+                    mask = mask & (df['Type'] == asset_type_filter)
+                
+                holdings = df[mask][['Name', target_date]].copy()
+                holdings.columns = ['Name', 'Allocation']
+                latest_holdings[name] = holdings
+            else:
+                latest_holdings[name] = pd.DataFrame(columns=['Name', 'Allocation'])
 
         n = len(fund_names)
         count_matrix = pd.DataFrame(100.0, index=fund_names, columns=fund_names)
@@ -643,7 +652,9 @@ class MFAnalyzer:
             if not all(d in df.columns for d in d_cols):
                 continue
                 
-            mask = (df[dates[idx]] > 0) & (df['Type'] == asset_type_filter)
+            mask = df[dates[idx]] > 0
+            if asset_type_filter:
+                mask = mask & (df['Type'] == asset_type_filter)
             valid_df = df[mask]
             
             for _, row in valid_df.iterrows():
