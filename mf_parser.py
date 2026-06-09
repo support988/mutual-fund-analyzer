@@ -68,9 +68,10 @@ def parse_mf_csv(file_path):
         for col in actual_date_cols:
             df[col] = df[col].astype(str).replace('-', '0.0').replace('nan', '0.0').astype(float)
             
-        # 3. Strip whitespace from Name and Sector
-        df['Name'] = df['Name'].str.strip()
-        df['Sector'] = df['Sector'].str.strip()
+        # 3. Strip whitespace and ensure string type for metadata
+        for col in ['Name', 'Sector', 'Type']:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip().replace('nan', 'N/A')
         
         return {
             'fund_name': fund_name,

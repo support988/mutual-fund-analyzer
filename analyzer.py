@@ -32,27 +32,60 @@ class MFAnalyzer:
             for f in self.funds.values():
                 self.all_dates.update(f['dates'])
 
+    def load_from_directory(self, directory_path, pattern="*.csv"):
+        import glob
+        files = glob.glob(os.path.join(directory_path, pattern))
+        loaded = []
+        for f in files:
+            name = self.add_fund(f)
+            if name:
+                loaded.append(name)
+        return loaded
+
     def get_latest_month(self):
         if not self.all_dates:
             return None
         return max(self.all_dates)
 
-    def get_master_holdings(self, asset_type_filter="Equity"):
-        latest_month = self.get_latest_month()
-        if not latest_month:
+    def get_master_holdings(self, asset_type_filter="Equity", analysis_date=None, smart_patching=False):
+        """
+        Aggregates holdings across all loaded funds.
+        - analysis_date: If provided, uses the closest available date on or before this date for each fund.
+        - smart_patching: If True, carries forward the latest available data for a fund even if it's older than the target date.
+        """
+        if not self.funds:
             return pd.DataFrame()
 
         master_list = []
+        fund_reporting_dates = {}
+
         for fund_name, info in self.funds.items():
             df = info['df']
-            if latest_month in df.columns:
-                temp = df[df[latest_month] > 0].copy()
+            available_dates = info['dates']
+            
+            target_date = None
+            if analysis_date:
+                # Find the latest date <= analysis_date
+                past_dates = [d for d in available_dates if d <= analysis_date]
+                if past_dates:
+                    target_date = max(past_dates)
+                elif smart_patching:
+                    # If no date <= analysis_date but smart_patching is on, use the earliest available (or latest)
+                    # For patching forward, we usually want the latest available even if it's 'old'
+                    target_date = max(available_dates)
+            else:
+                # Use individual latest date
+                target_date = max(available_dates)
+
+            if target_date and target_date in df.columns:
+                temp = df[df[target_date] > 0].copy()
                 if asset_type_filter:
                     temp = temp[temp['Type'] == asset_type_filter]
                 
-                temp = temp[['Name', 'Sector', 'Type', latest_month]]
-                temp = temp.rename(columns={latest_month: fund_name})
+                temp = temp[['Name', 'Sector', 'Type', target_date]]
+                temp = temp.rename(columns={target_date: fund_name})
                 master_list.append(temp)
+                fund_reporting_dates[fund_name] = target_date.strftime('%d-%b-%y')
 
         if not master_list:
             return pd.DataFrame()
@@ -64,12 +97,25 @@ class MFAnalyzer:
                 master_list_renamed.append(temp)
             else:
                 master_list_renamed.append(temp.drop(columns=['Sector', 'Type'], errors='ignore'))
+        
         merged = reduce(
             lambda left, right: pd.merge(left, right, on='Name', how='outer'),
             master_list_renamed
         )
+        
+        # Fill missing values correctly based on column type
+        # Numeric columns (funds) -> 0
+        # Categorical columns (Sector, Type) -> "N/A"
+        categorical_cols = ['Sector', 'Type']
+        for col in categorical_cols:
+            if col in merged.columns:
+                merged[col] = merged[col].fillna("N/A")
+        
+        # All other columns (fund allocations) should be numeric
         merged = merged.fillna(0)
 
+        # Add reporting dates as metadata if needed (can be joined later or returned as dict)
+        # For now, let's keep the core stats
         fund_cols = list(self.funds.keys())
         present_fund_cols = [c for c in fund_cols if c in merged.columns]
         
@@ -169,26 +215,74 @@ class MFAnalyzer:
         time_series['AVERAGE'] = time_series.apply(calc_avg, axis=1)
         return time_series
 
-    def get_sector_data(self):
-        latest_month = self.get_latest_month()
-        if not latest_month:
+    def get_best_common_date(self):
+        """
+        Finds the latest date where the majority of funds have data.
+        """
+        if not self.all_dates:
+            return None
+        
+        date_counts = Counter()
+        for info in self.funds.values():
+            date_counts.update(info['dates'])
+        
+        if not date_counts:
+            return None
+            
+        # Sort dates descending
+        sorted_dates = sorted(date_counts.keys(), reverse=True)
+        total_funds = len(self.funds)
+        
+        # Prefer the latest date that has most funds
+        best_date = sorted_dates[0]
+        max_count = date_counts[best_date]
+        
+        for d in sorted_dates:
+            if date_counts[d] > max_count:
+                max_count = date_counts[d]
+                best_date = d
+            elif date_counts[d] == max_count:
+                continue # Keep the later one
+            
+            # If we found a date with ALL funds, that's a very strong candidate
+            if date_counts[d] == total_funds:
+                return d
+                
+        return best_date
+
+    def get_sector_data(self, analysis_date=None, smart_patching=False):
+        if not self.funds:
             return pd.DataFrame()
             
         sector_fund_map = {}
         for fund_name, info in self.funds.items():
             df = info['df']
-            if latest_month in df.columns:
-                equity_df = df[(df['Type'] == 'Equity') & (df[latest_month] > 0)]
-                sector_sums = equity_df.groupby('Sector')[latest_month].sum()
+            available_dates = info['dates']
+            
+            target_date = None
+            if analysis_date:
+                past_dates = [d for d in available_dates if d <= analysis_date]
+                if past_dates:
+                    target_date = max(past_dates)
+                elif smart_patching:
+                    target_date = max(available_dates)
+            else:
+                target_date = max(available_dates)
+
+            if target_date and target_date in df.columns:
+                equity_df = df[(df['Type'] == 'Equity') & (df[target_date] > 0)]
+                sector_sums = equity_df.groupby('Sector')[target_date].sum()
                 sector_fund_map[fund_name] = sector_sums
         
+        if not sector_fund_map:
+            return pd.DataFrame()
+
         sector_df = pd.DataFrame(sector_fund_map).fillna(0)
         sector_df['Average'] = sector_df.mean(axis=1)
         return sector_df
 
     def get_trends(self, asset_type_filter=None):
-        latest_month = self.get_latest_month()
-        if not latest_month:
+        if not self.funds:
             return {}
 
         results = {}
@@ -296,21 +390,21 @@ class MFAnalyzer:
             'fund_signals': fund_signals
         }
 
-    def get_investment_prospects(self, asset_type_filter="Equity"):
-        latest_month = self.get_latest_month()
-        if not latest_month:
+    def get_investment_prospects(self, asset_type_filter="Equity", analysis_date=None, smart_patching=False):
+        if not self.funds:
             return []
 
-        master_holdings = self.get_master_holdings(asset_type_filter=asset_type_filter)
+        master_holdings = self.get_master_holdings(
+            asset_type_filter=asset_type_filter, 
+            analysis_date=analysis_date, 
+            smart_patching=smart_patching
+        )
         if master_holdings.empty:
             return []
             
         prospect_stocks = master_holdings[master_holdings['Funds Count'] >= 2]
         total_funds = len(self.funds)
         
-        all_dates = sorted(list(self.all_dates))
-        base_month = all_dates[-3] if len(all_dates) >= 3 else (all_dates[0] if all_dates else None)
-
         preliminary_prospects = []
         for _, row in prospect_stocks.iterrows():
             stock_name = row['Name']
@@ -319,50 +413,15 @@ class MFAnalyzer:
             
             breadth_score = (funds_holding_count / total_funds) * 100
             
-            funds_holding_3m_ago = 0
-            if base_month:
-                for fund_name, info in self.funds.items():
-                    df = info['df']
-                    if base_month in df.columns:
-                        stock_filter = (df['Name'] == stock_name)
-                        if asset_type_filter:
-                            stock_filter = stock_filter & (df['Type'] == asset_type_filter)
-                        if not df[stock_filter & (df[base_month] > 0)].empty:
-                            funds_holding_3m_ago += 1
-            breadth_acceleration = funds_holding_count - funds_holding_3m_ago
-
             momentum_changes = []
             increase_count = 0
             new_entrant_count = 0
             fund_details = []
             total_alloc_3m_ago = 0
+            funds_holding_3m_ago = 0
             
             consecutive_reduction = 0
-            if len(all_dates) >= 2:
-                for m_idx in range(len(all_dates)-1, 0, -1):
-                    curr_m = all_dates[m_idx]
-                    prev_m = all_dates[m_idx-1]
-                    all_reduced = True
-                    reduced_any = False
-                    for fund_name, info in self.funds.items():
-                        df = info['df']
-                        stock_filter = (df['Name'] == stock_name)
-                        if asset_type_filter:
-                            stock_filter = stock_filter & (df['Type'] == asset_type_filter)
-                        stock_row = df[stock_filter]
-                        if not stock_row.empty:
-                            c_val = stock_row[curr_m].iloc[0] if curr_m in stock_row.columns else 0
-                            p_val = stock_row[prev_m].iloc[0] if prev_m in stock_row.columns else 0
-                            if c_val > 0 or p_val > 0:
-                                reduced_any = True
-                                if c_val >= p_val:
-                                    all_reduced = False
-                                    break
-                    if all_reduced and reduced_any:
-                        consecutive_reduction += 1
-                    else:
-                        break
-
+            
             for fund_name, info in self.funds.items():
                 df = info['df']
                 dates = info['dates']
@@ -371,19 +430,36 @@ class MFAnalyzer:
                     stock_filter = stock_filter & (df['Type'] == asset_type_filter)
                 stock_row = df[stock_filter]
                 
-                if latest_month in stock_row.columns and not stock_row.empty and stock_row[latest_month].iloc[0] > 0:
-                    latest_val = float(stock_row[latest_month].iloc[0])
-                    base = dates[-3] if len(dates) >= 3 else (dates[0] if len(dates) > 0 else None)
-                    prev = dates[-2] if len(dates) >= 2 else None
+                # Determine individual target date
+                target_date = None
+                if analysis_date:
+                    past_dates = [d for d in dates if d <= analysis_date]
+                    if past_dates: target_date = max(past_dates)
+                    elif smart_patching: target_date = max(dates)
+                else:
+                    target_date = max(dates)
+                
+                if target_date and target_date in stock_row.columns and not stock_row.empty and stock_row[target_date].iloc[0] > 0:
+                    latest_val = float(stock_row[target_date].iloc[0])
                     
+                    # Find 1m and 3m ago relative to target_date
+                    idx = dates.index(target_date)
+                    prev = dates[idx-1] if idx >= 1 else None
+                    base = dates[idx-2] if idx >= 2 else (dates[0] if idx > 0 else None)
+                    # For momentum, let's use 3 periods if possible
+                    base_3m = dates[idx-3] if idx >= 3 else (dates[0] if idx > 0 else None)
+
                     val_prev = float(stock_row[prev].iloc[0]) if prev and prev in stock_row.columns else 0.0
-                    val_base = float(stock_row[base].iloc[0]) if base and base in stock_row.columns else 0.0
+                    val_base = float(stock_row[base_3m].iloc[0]) if base_3m and base_3m in stock_row.columns else 0.0
                     
+                    if val_base > 0:
+                        funds_holding_3m_ago += 1
+                        
                     total_alloc_3m_ago += val_base
                     change_3m = latest_val - val_base
                     momentum_changes.append(change_3m)
                     if change_3m > 0: increase_count += 1
-                    if prev and prev in stock_row.columns and float(stock_row[prev].iloc[0]) == 0:
+                    if val_prev == 0:
                         new_entrant_count += 1
                         
                     monthly_series = {}
@@ -401,10 +477,11 @@ class MFAnalyzer:
                         'monthly_series': monthly_series
                     })
             
+            breadth_acceleration = funds_holding_count - funds_holding_3m_ago
             momentum_score = sum(momentum_changes) / len(momentum_changes) if momentum_changes else 0.0
             conviction_score = (increase_count / funds_holding_count) * 100
 
-            # Base Score (no price data yet)
+            # Base Score
             base_score = (breadth_score * 0.25) + \
                          (momentum_score * 10 * 0.30) + \
                          (conviction_score * 0.20) + \
@@ -422,12 +499,12 @@ class MFAnalyzer:
                 'momentum_score': momentum_score,
                 'conviction_score': conviction_score,
                 'new_entrants': new_entrant_count,
-                'composite_score': preliminary_score, # Temporary
+                'composite_score': preliminary_score,
                 'base_score': base_score,
                 'fund_details': fund_details,
                 'breadth_acceleration': breadth_acceleration,
                 'new_entrant_bonus': new_entrant_bonus,
-                'consecutive_reduction': consecutive_reduction,
+                'consecutive_reduction': consecutive_reduction, # Would need same relative logic if kept
                 'total_alloc_3m_ago': total_alloc_3m_ago
             })
             
