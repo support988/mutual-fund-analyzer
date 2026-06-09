@@ -129,6 +129,9 @@ class MFAnalyzer:
             lookback_idx = max(0, len(dates) - 1 - months_lookback)
             lookback_date = dates[lookback_idx]
             
+            if latest_date not in df.columns or lookback_date not in df.columns:
+                continue
+            
             # A "New Entrant" is >0% now and was 0% (or not present) at lookback_date
             mask = (df[latest_date] > 0) & (df[lookback_date] == 0)
             if asset_type_filter:

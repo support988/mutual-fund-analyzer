@@ -7,7 +7,8 @@ import re
 # Built for: Altus Family Office
 # Last updated: 2024-05-22
 
-BASE_DIR = r"C:\Users\USER\Desktop\TV\Project\MF\downloads\holdings"
+# Dynamic base directory: look for 'downloads/holdings' in the current working directory
+BASE_DIR = os.path.join(os.getcwd(), "downloads", "holdings")
 
 FOLDER_MAPPING = {
     "Contra_Fund": "Contra Fund",

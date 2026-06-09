@@ -134,15 +134,13 @@ def fetch_holdings(amficode: int, months: int = 12) -> list:
 def fmt_date(iso: str) -> str:
     """Convert ISO date string to NGEN UI display format: 30-Apr-26"""
     try:
-        d = date.fromisoformat(iso[:10])
-        return d.strftime("%-d-%b-%y")          # Linux
+        from datetime import datetime
+        d = datetime.strptime(iso[:10], "%Y-%m-%d").date()
+        # %d gives 2-digit day. If we want 1-digit for 1-9, we use lstrip('0')
+        # However, %d-%b-%y is safest for parsing back.
+        return d.strftime("%d-%b-%y")
     except Exception:
-        try:
-            from datetime import datetime
-            d = datetime.strptime(iso[:10], "%Y-%m-%d").date()
-            return f"{d.day}-{d.strftime('%b')}-{str(d.year)[2:]}"
-        except Exception:
-            return iso[:10]
+        return iso[:10]
 
 # ─── BUILD WIDE-FORMAT DF MATCHING NGEN UI CSV ───────────────────────────────
 

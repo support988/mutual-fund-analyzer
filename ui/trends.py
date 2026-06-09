@@ -20,6 +20,18 @@ class TrendsWidget(QWidget):
         filter_layout.addWidget(self.asset_filter)
         filter_layout.addStretch()
         self.main_layout.addLayout(filter_layout)
+
+        # Behavioral Insights Notice
+        notice_label = QLabel(
+            "Note: Advanced Behavioral Insights (Conviction Entrants, Buildup Acceleration, "
+            "Partial Exits, Herd Entries) are available in the Streamlit web interface."
+        )
+        notice_label.setStyleSheet(
+            "color: #2563eb; font-weight: bold; padding: 10px; "
+            "background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 4px;"
+        )
+        notice_label.setWordWrap(True)
+        self.main_layout.addWidget(notice_label)
         
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)

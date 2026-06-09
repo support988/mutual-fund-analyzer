@@ -14,35 +14,35 @@ from path_utils import get_app_data_path
 from ui.holdings_history import show_holdings_history
 
 # --- Cached Data Helpers ---
-@st.cache_data
+@st.cache_data(hash_funcs={MFAnalyzer: id})
 def get_master_holdings_cached(_analyzer, asset_type_filter, analysis_date, smart_patching):
     return _analyzer.get_master_holdings(asset_type_filter, analysis_date, smart_patching)
 
-@st.cache_data
+@st.cache_data(hash_funcs={MFAnalyzer: id})
 def get_overlap_matrix_cached(_analyzer, asset_type_filter):
     return _analyzer.get_overlap_matrix(asset_type_filter)
 
-@st.cache_data
+@st.cache_data(hash_funcs={MFAnalyzer: id})
 def get_common_new_entrants_cached(_analyzer, months_lookback, asset_type_filter):
     return _analyzer.get_common_new_entrants(months_lookback, asset_type_filter)
 
-@st.cache_data
+@st.cache_data(hash_funcs={MFAnalyzer: id})
 def get_trends_cached(_analyzer):
     return _analyzer.get_trends()
 
-@st.cache_data
+@st.cache_data(hash_funcs={MFAnalyzer: id})
 def get_conviction_entrants_cached(_analyzer, asset_type_filter, min_allocation):
     return _analyzer.get_conviction_entrants(asset_type_filter, min_allocation)
 
-@st.cache_data
+@st.cache_data(hash_funcs={MFAnalyzer: id})
 def get_buildup_acceleration_cached(_analyzer, asset_type_filter, min_funds):
     return _analyzer.get_buildup_acceleration(asset_type_filter, min_funds)
 
-@st.cache_data
+@st.cache_data(hash_funcs={MFAnalyzer: id})
 def get_partial_exits_cached(_analyzer, asset_type_filter, exit_threshold, months_lookback):
     return _analyzer.get_partial_exits(asset_type_filter, exit_threshold, months_lookback)
 
-@st.cache_data
+@st.cache_data(hash_funcs={MFAnalyzer: id})
 def get_herd_entries_cached(_analyzer, asset_type_filter, min_funds, months_lookback):
     return _analyzer.get_herd_entries(asset_type_filter, min_funds, months_lookback)
 
