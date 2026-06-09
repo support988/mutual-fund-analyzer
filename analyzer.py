@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import io
 import price_fetcher
 from collections import Counter
+import os
 
 class MFAnalyzer:
     def __init__(self):
@@ -49,32 +50,25 @@ class MFAnalyzer:
 
     def get_master_holdings(self, asset_type_filter="Equity", analysis_date=None, smart_patching=False):
         """
-        Aggregates holdings across all loaded funds.
-        - analysis_date: If provided, uses the closest available date on or before this date for each fund.
-        - smart_patching: If True, carries forward the latest available data for a fund even if it's older than the target date.
+        Aggregates holdings across all loaded funds efficiently.
         """
         if not self.funds:
             return pd.DataFrame()
 
-        master_list = []
-        fund_reporting_dates = {}
-
+        all_holdings = []
+        
         for fund_name, info in self.funds.items():
             df = info['df']
             available_dates = info['dates']
             
             target_date = None
             if analysis_date:
-                # Find the latest date <= analysis_date
                 past_dates = [d for d in available_dates if d <= analysis_date]
                 if past_dates:
                     target_date = max(past_dates)
                 elif smart_patching:
-                    # If no date <= analysis_date but smart_patching is on, use the earliest available (or latest)
-                    # For patching forward, we usually want the latest available even if it's 'old'
                     target_date = max(available_dates)
             else:
-                # Use individual latest date
                 target_date = max(available_dates)
 
             if target_date and target_date in df.columns:
@@ -82,93 +76,139 @@ class MFAnalyzer:
                 if asset_type_filter:
                     temp = temp[temp['Type'] == asset_type_filter]
                 
-                temp = temp[['Name', 'Sector', 'Type', target_date]]
-                temp = temp.rename(columns={target_date: fund_name})
-                master_list.append(temp)
-                fund_reporting_dates[fund_name] = target_date.strftime('%d-%b-%y')
+                # Keep Name, Sector, Type and the allocation value
+                temp = temp[['Name', 'Sector', 'Type', target_date]].copy()
+                temp['fund_name'] = fund_name
+                temp = temp.rename(columns={target_date: 'Allocation'})
+                all_holdings.append(temp)
 
-        if not master_list:
+        if not all_holdings:
             return pd.DataFrame()
 
-        from functools import reduce
-        master_list_renamed = []
-        for i, temp in enumerate(master_list):
-            if i == 0:
-                master_list_renamed.append(temp)
-            else:
-                master_list_renamed.append(temp.drop(columns=['Sector', 'Type'], errors='ignore'))
+        # Efficiently combine all holdings
+        combined = pd.concat(all_holdings, ignore_index=True)
         
-        merged = reduce(
-            lambda left, right: pd.merge(left, right, on='Name', how='outer'),
-            master_list_renamed
-        )
+        # Pivot to get wide format
+        # We use max for Sector/Type in case there are minor discrepancies between funds for the same stock
+        pivot = combined.pivot_table(
+            index=['Name', 'Sector', 'Type'], 
+            columns='fund_name', 
+            values='Allocation', 
+            aggfunc='first'
+        ).reset_index()
         
-        # Fill missing values correctly based on column type
-        # Numeric columns (funds) -> 0
-        # Categorical columns (Sector, Type) -> "N/A"
-        categorical_cols = ['Sector', 'Type']
-        for col in categorical_cols:
-            if col in merged.columns:
-                merged[col] = merged[col].fillna("N/A")
-        
-        # All other columns (fund allocations) should be numeric
-        merged = merged.fillna(0)
-
-        # Add reporting dates as metadata if needed (can be joined later or returned as dict)
-        # For now, let's keep the core stats
+        # Fill NaNs with 0 for fund columns
         fund_cols = list(self.funds.keys())
-        present_fund_cols = [c for c in fund_cols if c in merged.columns]
+        present_fund_cols = [c for c in fund_cols if c in pivot.columns]
+        pivot[present_fund_cols] = pivot[present_fund_cols].fillna(0)
+
+        pivot['Funds Count'] = (pivot[present_fund_cols] > 0).sum(axis=1)
+        pivot['Avg Allocation %'] = pivot[present_fund_cols].mean(axis=1)
+        pivot['Total Weight'] = pivot[present_fund_cols].sum(axis=1)
+
+        return pivot.sort_values(by='Total Weight', ascending=False)
+
+    def get_common_new_entrants(self, months_lookback=3, asset_type_filter="Equity"):
+        """
+        Identifies stocks that were not in a fund's portfolio N months ago but are present now.
+        Returns a summary of these 'New Entrants' across all funds.
+        """
+        if not self.funds:
+            return pd.DataFrame()
+            
+        new_entrants_list = []
         
-        merged['Funds Count'] = (merged[present_fund_cols] > 0).sum(axis=1)
-        merged['Avg Allocation %'] = merged[present_fund_cols].mean(axis=1)
-        merged['Total Weight'] = merged[present_fund_cols].sum(axis=1)
+        for fund_name, info in self.funds.items():
+            df = info['df']
+            dates = info['dates']
+            if len(dates) < 2:
+                continue
+                
+            latest_date = dates[-1]
+            # Find date approx N months ago
+            lookback_idx = max(0, len(dates) - 1 - months_lookback)
+            lookback_date = dates[lookback_idx]
+            
+            # A "New Entrant" is >0% now and was 0% (or not present) at lookback_date
+            mask = (df[latest_date] > 0) & (df[lookback_date] == 0)
+            if asset_type_filter:
+                mask = mask & (df['Type'] == asset_type_filter)
+                
+            new_ones = df[mask].copy()
+            for _, row in new_ones.iterrows():
+                new_entrants_list.append({
+                    'Stock': row['Name'],
+                    'Fund': self._get_short_fund_name(fund_name),
+                    'Sector': row['Sector'],
+                    'Latest %': row[latest_date],
+                    'Change %': row[latest_date] - row[lookback_date]
+                })
+        
+        if not new_entrants_list:
+            return pd.DataFrame()
+            
+        new_df = pd.DataFrame(new_entrants_list)
+        
+        # Aggregate to find common ones
+        summary = new_df.groupby('Stock').agg({
+            'Fund': list,
+            'Sector': 'first',
+            'Latest %': ['count', 'mean', 'sum'],
+            'Change %': 'mean'
+        }).reset_index()
+        
+        summary.columns = ['Stock', 'Funds List', 'Sector', 'Fund Count', 'Avg %', 'Total %', 'Avg Change']
+        
+        # Clean up Funds List for display
+        summary['Funds List'] = summary['Funds List'].apply(lambda x: ", ".join(x))
+        
+        return summary.sort_values(by='Fund Count', ascending=False)
 
-        return merged.sort_values(by='Total Weight', ascending=False)
-
-    def get_overlap_matrix(self):
+    def get_overlap_matrix(self, asset_type_filter="Equity"):
+        """
+        Calculates overlap matrices efficiently by pre-extracting latest holdings.
+        """
         fund_names = list(self.funds.keys())
+        if not fund_names:
+            return {'count': pd.DataFrame(), 'weight': pd.DataFrame()}
+
+        # Pre-extract latest holdings for all funds
+        latest_holdings = {}
+        for name in fund_names:
+            info = self.funds[name]
+            df = info['df']
+            latest_date = max(info['dates'])
+            holdings = df[(df['Type'] == asset_type_filter) & (df[latest_date] > 0)][['Name', latest_date]].copy()
+            holdings.columns = ['Name', 'Allocation']
+            latest_holdings[name] = holdings
+
         n = len(fund_names)
-        
-        count_matrix = pd.DataFrame(index=fund_names, columns=fund_names)
-        weight_matrix = pd.DataFrame(index=fund_names, columns=fund_names)
+        count_matrix = pd.DataFrame(100.0, index=fund_names, columns=fund_names)
+        weight_matrix = pd.DataFrame(100.0, index=fund_names, columns=fund_names)
 
         for i in range(n):
-            for j in range(n):
-                f1 = fund_names[i]
+            f1 = fund_names[i]
+            h1 = latest_holdings[f1]
+            
+            for j in range(i + 1, n):
                 f2 = fund_names[j]
+                h2 = latest_holdings[f2]
                 
-                if i == j:
-                    count_matrix.loc[f1, f2] = 100.0
-                    weight_matrix.loc[f1, f2] = 100.0
+                if h1.empty or h2.empty:
+                    count_matrix.loc[f1, f2] = count_matrix.loc[f2, f1] = 0.0
+                    weight_matrix.loc[f1, f2] = weight_matrix.loc[f2, f1] = 0.0
                     continue
+
+                merged = pd.merge(h1, h2, on='Name', suffixes=('_1', '_2'))
                 
-                df1 = self.funds[f1]['df']
-                df2 = self.funds[f2]['df']
+                # Count Overlap
+                overlap_count = len(merged)
+                c_overlap = round(overlap_count / min(len(h1), len(h2)) * 100, 1)
+                count_matrix.loc[f1, f2] = count_matrix.loc[f2, f1] = c_overlap
                 
-                latest1 = max(self.funds[f1]['dates'])
-                latest2 = max(self.funds[f2]['dates'])
-                
-                e1 = df1[(df1['Type'] == 'Equity') & (df1[latest1] > 0)][['Name', latest1]].rename(columns={latest1: 'alloc1'})
-                e2 = df2[(df2['Type'] == 'Equity') & (df2[latest2] > 0)][['Name', latest2]].rename(columns={latest2: 'alloc2'})
-                
-                s1 = set(e1['Name'])
-                s2 = set(e2['Name'])
-                
-                common_names = s1.intersection(s2)
-                
-                if not s1 or not s2:
-                    c_overlap = 0.0
-                else:
-                    c_overlap = round(len(common_names) / min(len(s1), len(s2)) * 100, 1)
-                count_matrix.loc[f1, f2] = c_overlap
-                
-                if not common_names:
-                    w_overlap = 0.0
-                else:
-                    merged = pd.merge(e1, e2, on='Name')
-                    merged['min_alloc'] = merged[['alloc1', 'alloc2']].min(axis=1)
-                    w_overlap = round(merged['min_alloc'].sum(), 1)
-                weight_matrix.loc[f1, f2] = w_overlap
+                # Weight Overlap
+                w_overlap = round(merged[['Allocation_1', 'Allocation_2']].min(axis=1).sum(), 1)
+                weight_matrix.loc[f1, f2] = weight_matrix.loc[f2, f1] = w_overlap
 
         return {'count': count_matrix, 'weight': weight_matrix}
 
@@ -208,11 +248,7 @@ class MFAnalyzer:
         if not fund_cols:
             return time_series
 
-        def calc_avg(row):
-            vals = [row[f] for f in fund_cols if f in row.index and pd.notna(row[f]) and row[f] > 0]
-            return round(sum(vals) / len(vals), 2) if vals else 0.0
-
-        time_series['AVERAGE'] = time_series.apply(calc_avg, axis=1)
+        time_series['AVERAGE'] = time_series[fund_cols].replace(0, float('nan')).mean(axis=1).fillna(0).round(2)
         return time_series
 
     def get_best_common_date(self):
@@ -238,13 +274,9 @@ class MFAnalyzer:
         max_count = date_counts[best_date]
         
         for d in sorted_dates:
-            if date_counts[d] > max_count:
+            if date_counts[d] >= max_count:
                 max_count = date_counts[d]
                 best_date = d
-            elif date_counts[d] == max_count:
-                continue # Keep the later one
-            
-            # If we found a date with ALL funds, that's a very strong candidate
             if date_counts[d] == total_funds:
                 return d
                 
@@ -322,8 +354,6 @@ class MFAnalyzer:
         short = name
         for p in patterns:
             short = short.replace(p, "")
-        if short.endswith(" Fund"):
-            short = short[:-5]
         return short.strip()
 
     def _aggregate_active_buy_signal(self, fund_details, price_change_3m):
@@ -443,9 +473,11 @@ class MFAnalyzer:
                     latest_val = float(stock_row[target_date].iloc[0])
                     
                     # Find 1m and 3m ago relative to target_date
-                    idx = dates.index(target_date)
+                    try:
+                        idx = dates.index(target_date)
+                    except ValueError:
+                        continue
                     prev = dates[idx-1] if idx >= 1 else None
-                    base = dates[idx-2] if idx >= 2 else (dates[0] if idx > 0 else None)
                     # For momentum, let's use 3 periods if possible
                     base_3m = dates[idx-3] if idx >= 3 else (dates[0] if idx > 0 else None)
 
@@ -552,6 +584,288 @@ class MFAnalyzer:
                 
         return top_prospects
 
+    def get_conviction_entrants(self, asset_type_filter="Equity", min_allocation=1.0):
+        """
+        Analyzes new entrants with high conviction (large initial allocation).
+        """
+        res = self.get_common_new_entrants(asset_type_filter=asset_type_filter)
+        if res.empty:
+            return pd.DataFrame()
+        
+        filtered = res[res['Avg %'] >= min_allocation].copy()
+        if filtered.empty:
+            return pd.DataFrame()
+
+        def get_conviction(avg):
+            if avg >= 2.0: return 'High'
+            if avg >= 1.0: return 'Medium'
+            return 'Low'
+        
+        filtered['Conviction'] = filtered['Avg %'].apply(get_conviction)
+
+        def get_inference(row):
+            count = row['Fund Count']
+            conv = row['Conviction']
+            if count >= 4 and conv == 'High':
+                return "Strong institutional consensus. Multiple funds entering with large allocation — high confidence new bet."
+            if count >= 4 and conv == 'Medium':
+                return "Broad interest but moderate sizing. Worth watching for further buildup."
+            if count >= 2 and conv == 'High':
+                return "Few funds but high conviction sizing. Early mover signal — monitor for more funds joining."
+            if count >= 2 and conv == 'Medium':
+                return "Early stage entry with moderate allocation. Insufficient evidence yet — watch next month."
+            return "Low conviction entry. Likely exploratory position or rebalancing noise."
+
+        filtered['Inference'] = filtered.apply(get_inference, axis=1)
+        return filtered.sort_values(by='Avg %', ascending=False)
+
+    def get_buildup_acceleration(self, asset_type_filter="Equity", min_funds=2):
+        """
+        Identifies stocks where funds are accelerating their buildup (buying more this month than last).
+        """
+        if not self.funds:
+            return pd.DataFrame()
+            
+        acceleration_list = []
+        for fund_name, info in self.funds.items():
+            dates = info['dates']
+            df = info['df']
+            if len(dates) < 4:
+                continue
+                
+            idx = len(dates) - 1
+            # Current, Prev, 2m ago, 3m ago
+            d_cols = [dates[idx], dates[idx-1], dates[idx-2], dates[idx-3]]
+            
+            if not all(d in df.columns for d in d_cols):
+                continue
+                
+            mask = (df[dates[idx]] > 0) & (df['Type'] == asset_type_filter)
+            valid_df = df[mask]
+            
+            for _, row in valid_df.iterrows():
+                # [idx, idx-1, idx-2, idx-3]
+                latest = float(row[dates[idx]])
+                m1 = float(row[dates[idx-1]])
+                m2 = float(row[dates[idx-2]])
+                m3 = float(row[dates[idx-3]])
+                
+                early_change = m2 - m3
+                recent_change = latest - m2
+                acceleration = recent_change - early_change
+                
+                if acceleration > 0 and recent_change > 0:
+                    acceleration_list.append({
+                        'Stock': row['Name'],
+                        'Fund': self._get_short_fund_name(fund_name),
+                        'Sector': row['Sector'],
+                        'latest_alloc': latest,
+                        'early_change': early_change,
+                        'recent_change': recent_change,
+                        'acceleration': acceleration
+                    })
+                    
+        if not acceleration_list:
+            return pd.DataFrame()
+            
+        acc_df = pd.DataFrame(acceleration_list)
+        summary = acc_df.groupby('Stock').agg({
+            'Sector': 'first',
+            'Fund': list,
+            'acceleration': 'mean',
+            'latest_alloc': 'mean'
+        }).reset_index()
+        
+        summary['Fund Count'] = summary['Fund'].apply(len)
+        summary = summary[summary['Fund Count'] >= min_funds].copy()
+        
+        if summary.empty:
+            return pd.DataFrame()
+            
+        summary = summary.rename(columns={
+            'acceleration': 'Avg Acceleration',
+            'latest_alloc': 'Avg Latest Alloc',
+            'Fund': 'Funds List'
+        })
+        
+        summary['Funds List'] = summary['Funds List'].apply(lambda x: ", ".join(x))
+        
+        def get_inf(row):
+            count = row['Fund Count']
+            accel = row['Avg Acceleration']
+            if count >= 4 and accel >= 0.5:
+                return "Aggressive buildup across many funds. Funds are urgently increasing bets — strong buy signal."
+            if count >= 4 and accel < 0.5:
+                return "Broad but gradual buildup. Consistent accumulation without urgency — positive but not rushed."
+            if count >= 2 and accel >= 0.5:
+                return "Fast acceleration in select funds. Early aggressive movers — watch if others follow."
+            if count >= 2 and accel < 0.5:
+                return "Slow steady buildup in few funds. Accumulation in early stages — monitor trend."
+            return "Isolated buildup. Not yet a cross-fund theme."
+            
+        summary['Inference'] = summary.apply(get_inf, axis=1)
+        cols = ['Stock', 'Sector', 'Fund Count', 'Avg Acceleration', 'Avg Latest Alloc', 'Funds List', 'Inference']
+        return summary[cols].sort_values(by='Avg Acceleration', ascending=False)
+
+    def get_partial_exits(self, asset_type_filter="Equity", exit_threshold=0.5, months_lookback=3):
+        """
+        Detects stocks where multiple funds are meaningful reducing their exposure.
+        """
+        if not self.funds:
+            return pd.DataFrame()
+            
+        exits_list = []
+        for fund_name, info in self.funds.items():
+            dates = info['dates']
+            df = info['df']
+            if len(dates) < 2:
+                continue
+                
+            latest_date = dates[-1]
+            lookback_idx = max(0, len(dates) - 1 - months_lookback)
+            lookback_date = dates[lookback_idx]
+            
+            if latest_date not in df.columns or lookback_date not in df.columns:
+                continue
+                
+            mask = df['Type'] == asset_type_filter
+            valid_df = df[mask]
+            
+            for _, row in valid_df.iterrows():
+                old_val = float(row[lookback_date])
+                new_val = float(row[latest_date])
+                
+                if old_val > 0 and new_val > 0 and new_val < old_val:
+                    reduction_pct = ((old_val - new_val) / old_val) * 100
+                    if reduction_pct >= exit_threshold * 100:
+                        exits_list.append({
+                            'Stock': row['Name'],
+                            'Fund': self._get_short_fund_name(fund_name),
+                            'Sector': row['Sector'],
+                            'Old Alloc': old_val,
+                            'New Alloc': new_val,
+                            'Reduction %': reduction_pct
+                        })
+                        
+        if not exits_list:
+            return pd.DataFrame()
+            
+        exit_df = pd.DataFrame(exits_list)
+        summary = exit_df.groupby('Stock').agg({
+            'Fund': list,
+            'Reduction %': 'mean',
+            'New Alloc': 'mean',
+            'Sector': 'first'
+        }).reset_index()
+        
+        summary['Fund Count'] = summary['Fund'].apply(len)
+        summary = summary.rename(columns={
+            'Reduction %': 'Avg Reduction %',
+            'New Alloc': 'Avg New Alloc',
+            'Fund': 'Funds List'
+        })
+        
+        def get_strength(avg):
+            if avg >= 50: return 'Strong'
+            if avg >= 25: return 'Moderate'
+            return 'Mild'
+            
+        summary['Exit Strength'] = summary['Avg Reduction %'].apply(get_strength)
+        
+        def get_inf(row):
+            count = row['Fund Count']
+            strength = row['Exit Strength']
+            if count >= 4 and strength == 'Strong':
+                return "Mass distribution detected. Most funds cutting position by half or more — strong exit signal. Avoid or reduce exposure."
+            if count >= 4 and strength == 'Moderate':
+                return "Broad trimming across funds. Not a full exit but meaningful reduction in conviction — caution advised."
+            if count >= 2 and strength == 'Strong':
+                return "Sharp reduction in select funds. Early distribution signal — watch if others follow before acting."
+            if count >= 2 and strength == 'Moderate':
+                return "Moderate trimming in few funds. Could be profit booking or rebalancing — not alarming yet."
+            return "Mild reduction. Likely routine rebalancing rather than a conviction change."
+            
+        summary['Inference'] = summary.apply(get_inf, axis=1)
+        summary['Funds List'] = summary['Funds List'].apply(lambda x: ", ".join(x))
+        cols = ['Stock', 'Sector', 'Fund Count', 'Avg Reduction %', 'Avg New Alloc', 'Exit Strength', 'Funds List', 'Inference']
+        return summary[cols].sort_values(by=['Fund Count', 'Avg Reduction %'], ascending=[False, False])
+
+    def get_herd_entries(self, asset_type_filter="Equity", min_funds=4, months_lookback=1):
+        """
+        Identifies stocks where many funds have newly entered within a short period.
+        """
+        if not self.funds:
+            return pd.DataFrame()
+            
+        entries_list = []
+        for fund_name, info in self.funds.items():
+            dates = info['dates']
+            df = info['df']
+            if len(dates) < 2:
+                continue
+                
+            latest_date = dates[-1]
+            lookback_idx = max(0, len(dates) - 1 - months_lookback)
+            lookback_date = dates[lookback_idx]
+            
+            if latest_date not in df.columns or lookback_date not in df.columns:
+                continue
+                
+            mask = (df[latest_date] > 0) & (df[lookback_date] == 0) & (df['Type'] == asset_type_filter)
+            new_entries = df[mask]
+            
+            for _, row in new_entries.iterrows():
+                entries_list.append({
+                    'Stock': row['Name'],
+                    'Fund': self._get_short_fund_name(fund_name),
+                    'Sector': row['Sector'],
+                    'Latest Alloc': float(row[latest_date])
+                })
+                
+        if not entries_list:
+            return pd.DataFrame()
+            
+        herd_df = pd.DataFrame(entries_list)
+        summary = herd_df.groupby('Stock').agg({
+            'Fund': list,
+            'Latest Alloc': 'mean',
+            'Sector': 'first'
+        }).reset_index()
+        
+        summary['Fund Count'] = summary['Fund'].apply(len)
+        summary = summary[summary['Fund Count'] >= min_funds].copy()
+        
+        if summary.empty:
+            return pd.DataFrame()
+            
+        summary = summary.rename(columns={
+            'Latest Alloc': 'Avg Alloc',
+            'Fund': 'Funds List'
+        })
+        
+        def get_risk(count):
+            if count >= 6: return 'High'
+            if count >= 4: return 'Medium'
+            return 'Low'
+            
+        summary['Crowding Risk'] = summary['Fund Count'].apply(get_risk)
+        
+        def get_inf(row):
+            count = row['Fund Count']
+            risk = row['Crowding Risk']
+            if count >= 6 and risk == 'High':
+                return "Extreme herding detected. Too many funds entering simultaneously — crowding risk is real. Strong momentum but fragile if sentiment shifts."
+            if count >= 5 and risk == 'High':
+                return "Heavy herding. High short-term momentum but watch for crowding unwind if any fund starts exiting."
+            if count == 4 and risk == 'Medium':
+                return "Moderate herding. Broad interest forming — good early signal if conviction sizes are also high."
+            return "Threshold herd entry. Monitor whether this broadens or stalls next month."
+            
+        summary['Inference'] = summary.apply(get_inf, axis=1)
+        summary['Funds List'] = summary['Funds List'].apply(lambda x: ", ".join(x))
+        cols = ['Stock', 'Sector', 'Fund Count', 'Avg Alloc', 'Crowding Risk', 'Funds List', 'Inference']
+        return summary[cols].sort_values(by='Fund Count', ascending=False)
+
     def get_prospects_export_data(self, asset_type_filter="Equity"):
         prospects = self.get_investment_prospects(asset_type_filter=asset_type_filter)
         all_dates = sorted(list(self.all_dates))
@@ -592,4 +906,5 @@ class MFAnalyzer:
                 ax2.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}%', ha='center', va='bottom')
             fig.tight_layout()
             p['figure'] = fig
+            plt.close(fig)
         return prospects

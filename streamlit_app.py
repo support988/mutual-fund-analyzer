@@ -13,6 +13,39 @@ import bulk_deals_parser
 from path_utils import get_app_data_path
 from ui.holdings_history import show_holdings_history
 
+# --- Cached Data Helpers ---
+@st.cache_data
+def get_master_holdings_cached(_analyzer, asset_type_filter, analysis_date, smart_patching):
+    return _analyzer.get_master_holdings(asset_type_filter, analysis_date, smart_patching)
+
+@st.cache_data
+def get_overlap_matrix_cached(_analyzer, asset_type_filter):
+    return _analyzer.get_overlap_matrix(asset_type_filter)
+
+@st.cache_data
+def get_common_new_entrants_cached(_analyzer, months_lookback, asset_type_filter):
+    return _analyzer.get_common_new_entrants(months_lookback, asset_type_filter)
+
+@st.cache_data
+def get_trends_cached(_analyzer):
+    return _analyzer.get_trends()
+
+@st.cache_data
+def get_conviction_entrants_cached(_analyzer, asset_type_filter, min_allocation):
+    return _analyzer.get_conviction_entrants(asset_type_filter, min_allocation)
+
+@st.cache_data
+def get_buildup_acceleration_cached(_analyzer, asset_type_filter, min_funds):
+    return _analyzer.get_buildup_acceleration(asset_type_filter, min_funds)
+
+@st.cache_data
+def get_partial_exits_cached(_analyzer, asset_type_filter, exit_threshold, months_lookback):
+    return _analyzer.get_partial_exits(asset_type_filter, exit_threshold, months_lookback)
+
+@st.cache_data
+def get_herd_entries_cached(_analyzer, asset_type_filter, min_funds, months_lookback):
+    return _analyzer.get_herd_entries(asset_type_filter, min_funds, months_lookback)
+
 # Set page config
 st.set_page_config(page_title="MF Portfolio Tracker", layout="wide")
 
@@ -44,10 +77,12 @@ if uploaded_files:
             f.write(uploaded_file.getbuffer())
         st.session_state.analyzer.add_fund(temp_path)
         os.remove(temp_path)
+    st.cache_data.clear() # Clear cache when new data is added
     st.sidebar.success("Files processed!")
 
 if st.sidebar.button("Clear All Funds"):
     st.session_state.analyzer = MFAnalyzer()
+    st.cache_data.clear()
     st.rerun()
 
 # Export Logic
@@ -75,7 +110,7 @@ st.title("Mutual Fund Portfolio Overlap & Concentration Tracker")
 tabs = st.tabs([
     "File Management", "Portfolio Overview", "Overlap Analysis", 
     "Concentration Tracker", "Sector Breakdown", "Trend Analysis", 
-    "Investment Prospects", "Watchlist", "Holdings History"
+    "Behavioral Insights", "Investment Prospects", "Watchlist", "Holdings History"
 ])
 
 # 1. File Management
@@ -88,6 +123,7 @@ with tabs[0]:
             col1.write(f"**{fund}**")
             if col2.button(f"Remove", key=f"remove_{fund}"):
                 st.session_state.analyzer.remove_fund(fund)
+                st.cache_data.clear()
                 st.rerun()
     else:
         st.write("No funds loaded.")
@@ -126,7 +162,8 @@ with tabs[1]:
         search = col2.text_input("Search Stocks", placeholder="Filter by name...")
         
         filter_val = asset_filter if asset_filter != "All" else None
-        master = st.session_state.analyzer.get_master_holdings(
+        master = get_master_holdings_cached(
+            st.session_state.analyzer,
             asset_type_filter=filter_val,
             analysis_date=analysis_date,
             smart_patching=smart_patching
@@ -152,7 +189,7 @@ with tabs[2]:
     if not st.session_state.analyzer.funds:
         st.warning("No funds loaded. Upload CSVs to analyze overlap.")
     else:
-        matrices = st.session_state.analyzer.get_overlap_matrix()
+        matrices = get_overlap_matrix_cached(st.session_state.analyzer, asset_type_filter="Equity")
         st.subheader("Overlap Count (%)")
         st.dataframe(matrices['count'].style.background_gradient(cmap='RdYlGn', axis=None).format("{:.1f}%"), use_container_width=True)
         st.subheader("Overlap Weight (%)")
@@ -168,11 +205,18 @@ with tabs[3]:
         asset_filter_c = col1.selectbox("Asset Type", ["All", "Equity", "Debt", "Others"], index=1, key="conc_asset_filter")
         
         filter_val_c = asset_filter_c if asset_filter_c != "All" else None
-        master_all = st.session_state.analyzer.get_master_holdings(asset_type_filter=filter_val_c)
+        # Use cached version for consistency and speed
+        master_all = get_master_holdings_cached(
+            st.session_state.analyzer, 
+            asset_type_filter=filter_val_c,
+            analysis_date=None, 
+            smart_patching=True
+        )
         
         if not master_all.empty:
             all_stocks = sorted(master_all['Name'].tolist())
-            selected_stock = col2.selectbox("Select Stock to Track", all_stocks)
+            # Added key="stock_selector" to preserve state across reruns
+            selected_stock = col2.selectbox("Select Stock to Track", all_stocks, key="stock_selector")
             
             if selected_stock:
                 ts_df = st.session_state.analyzer.get_stock_time_series(selected_stock)
@@ -180,20 +224,14 @@ with tabs[3]:
                 
                 # Plot
                 fig, ax = plt.subplots(figsize=(10, 5))
-                # The ts_df has 'Date' as a column or index depending on implementation
-                # Based on analyzer.py, it returns a DataFrame with 'Date' as a column
                 x_axis = ts_df['Date']
                 
                 for fund in ts_df.columns:
                     if fund in ['Date', 'AVERAGE']:
                         continue
-                    # Plot only if there is at least one non-zero value
                     if ts_df[fund].sum() > 0:
-                        # Use mask to handle zeros or NaNs if preferred, 
-                        # but here we follow the original logic of plotting all points
                         ax.plot(x_axis, ts_df[fund], marker='o', linewidth=2, label=fund)
                 
-                # Plot Average with distinct style
                 if 'AVERAGE' in ts_df.columns:
                     ax.plot(x_axis, ts_df['AVERAGE'], color='black', linewidth=3, linestyle='--', label='Average', marker='s')
 
@@ -231,17 +269,36 @@ with tabs[4]:
 
 # 6. Trend Analysis
 with tabs[5]:
-    st.header("New Entries & Exits")
+    st.header("Trend Analysis")
     if not st.session_state.analyzer.funds:
         st.warning("No funds loaded. Upload CSVs to see trends.")
     else:
-        trends = st.session_state.analyzer.get_trends()
+        # Common New Entrants Section
+        st.subheader("🔥 Common New Entrants (Last 3 Months)")
+        st.info("Stocks that were NOT in a fund's portfolio 3 months ago but are present now.")
+        
+        with st.container(border=True):
+            col1, col2 = st.columns(2)
+            lookback = col1.slider("Months Lookback", 1, 12, 3)
+            ent_asset_filter = col2.selectbox("Asset Type", ["Equity", "All"], index=0, key="ent_asset_filter")
+            
+            filter_val_e = ent_asset_filter if ent_asset_filter != "All" else None
+            common_entrants = get_common_new_entrants_cached(st.session_state.analyzer, lookback, filter_val_e)
+            
+            if not common_entrants.empty:
+                st.dataframe(common_entrants, use_container_width=True, hide_index=True)
+            else:
+                st.write("No common new entrants found in the selected period.")
+
+        st.divider()
+        st.subheader("Individual Fund Activity")
+        trends = get_trends_cached(st.session_state.analyzer)
         if trends:
             for fund, data in trends.items():
-                with st.expander(f"Fund Activity: {fund}", expanded=True):
+                with st.expander(f"Fund Activity: {fund}", expanded=False):
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.markdown("#### ✨ New Entrants")
+                        st.markdown("#### ✨ New Entrants (Current Month)")
                         if not data['new_entries'].empty:
                             st.table(data['new_entries'])
                         else:
@@ -255,8 +312,78 @@ with tabs[5]:
         else:
             st.write("Trend data unavailable.")
 
-# 7. Investment Prospects
+# 7. Behavioral Insights
 with tabs[6]:
+    st.header("Behavioral Insights & Qualitative Analysis")
+    if not st.session_state.analyzer.funds:
+        st.warning("No funds loaded. Upload CSVs to see behavioral insights.")
+    else:
+        st.info("Automated institutional sentiment analysis based on recent holding patterns.")
+        
+        # Conviction Entrants
+        st.subheader("🚀 High Conviction Entrants")
+        st.markdown("*New entries where funds took a significant initial position (>=1%).*")
+        with st.container(border=True):
+            col1, col2 = st.columns(2)
+            min_alloc = col1.slider("Min Initial Allocation (%)", 0.5, 5.0, 1.0, step=0.1)
+            conv_asset_filter = col2.selectbox("Asset Type", ["Equity", "All"], index=0, key="conv_asset_filter")
+            
+            filter_val_conv = "Equity" if conv_asset_filter == "Equity" else None
+            df_conv = get_conviction_entrants_cached(st.session_state.analyzer, filter_val_conv, min_alloc)
+            if not df_conv.empty:
+                st.dataframe(df_conv, use_container_width=True, hide_index=True)
+            else:
+                st.write("No high conviction entries found with current filters.")
+
+        # Buildup Acceleration
+        st.subheader("📈 Buildup Acceleration")
+        st.markdown("*Stocks where funds are increasing their buying speed compared to previous months.*")
+        with st.container(border=True):
+            col1, col2 = st.columns(2)
+            accel_min_funds = col1.number_input("Min Funds Showing Acceleration", 1, 10, 2)
+            accel_asset_filter = col2.selectbox("Asset Type", ["Equity", "All"], index=0, key="accel_asset_filter")
+            
+            filter_val_accel = "Equity" if accel_asset_filter == "Equity" else None
+            df_accel = get_buildup_acceleration_cached(st.session_state.analyzer, filter_val_accel, accel_min_funds)
+            if not df_accel.empty:
+                st.dataframe(df_accel, use_container_width=True, hide_index=True)
+            else:
+                st.write("No accelerated buildups detected.")
+
+        # Partial Exits
+        st.subheader("⚠️ Partial Exits (Distribution)")
+        st.markdown("*Stocks where multiple funds are significantly reducing their exposure.*")
+        with st.container(border=True):
+            col1, col2, col3 = st.columns(3)
+            exit_thresh = col1.slider("Reduction Threshold (%)", 10, 90, 50)
+            exit_lookback = col2.number_input("Lookback Months", 1, 12, 3, key="exit_lookback")
+            exit_asset_filter = col3.selectbox("Asset Type", ["Equity", "All"], index=0, key="exit_asset_filter")
+            
+            filter_val_exit = "Equity" if exit_asset_filter == "Equity" else None
+            df_exits = get_partial_exits_cached(st.session_state.analyzer, filter_val_exit, exit_thresh/100, exit_lookback)
+            if not df_exits.empty:
+                st.dataframe(df_exits, use_container_width=True, hide_index=True)
+            else:
+                st.write("No significant partial exits detected.")
+
+        # Herd Entries
+        st.subheader("👥 Herd Entries (Crowding Risk)")
+        st.markdown("*Stocks being bought by many funds simultaneously — potential momentum or crowding.*")
+        with st.container(border=True):
+            col1, col2, col3 = st.columns(3)
+            herd_min_funds = col1.number_input("Min Funds Entering", 1, 20, 4)
+            herd_lookback = col2.number_input("Lookback Months", 1, 12, 1, key="herd_lookback")
+            herd_asset_filter = col3.selectbox("Asset Type", ["Equity", "All"], index=0, key="herd_asset_filter")
+            
+            filter_val_herd = "Equity" if herd_asset_filter == "Equity" else None
+            df_herd = get_herd_entries_cached(st.session_state.analyzer, filter_val_herd, herd_min_funds, herd_lookback)
+            if not df_herd.empty:
+                st.dataframe(df_herd, use_container_width=True, hide_index=True)
+            else:
+                st.write("No herd entries detected in the selected period.")
+
+# 8. Investment Prospects
+with tabs[7]:
     st.header("Investment Prospects")
     if not st.session_state.analyzer.funds:
         st.warning("No funds loaded. Upload CSVs to see prospects.")
