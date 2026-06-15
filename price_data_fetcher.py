@@ -36,13 +36,19 @@ def _load_symbol_map():
         "bharti airtel": "BHARTIARTL.NS",
         "bharti airtel pp": "BHARTIARTL.NS",
         "sbi": "SBIN.NS",
+        "state bank of india": "SBIN.NS",
         "reliance industries": "RELIANCE.NS",
+        "reliance industr": "RELIANCE.NS",
         "hdfc bank": "HDFCBANK.NS",
         "icici bank": "ICICIBANK.NS",
         "itc": "ITC.NS",
         "infosys": "INFY.NS",
-        "tcs": "TCS.NS"
+        "tcs": "TCS.NS",
+        "tata consultancy": "TCS.NS",
+        "larsen & toubro": "LT.NS",
+        "l&t": "LT.NS"
     }
+
     for k, v in emergency_overrides.items():
         if k not in _SYMBOL_MAP:
             _SYMBOL_MAP[k] = v
