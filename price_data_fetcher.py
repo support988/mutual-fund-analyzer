@@ -11,20 +11,25 @@ def _load_symbol_map():
     global _SYMBOL_MAP
     if _SYMBOL_MAP is None:
         if os.path.exists(MAP_PATH):
-            df = pd.read_csv(MAP_PATH)
-            # Map ngen_name to yf_ticker
-            _SYMBOL_MAP = dict(zip(df['ngen_name'], df['yf_ticker']))
+            try:
+                df = pd.read_csv(MAP_PATH)
+                # Store with lower-case keys for case-insensitive matching
+                _SYMBOL_MAP = {str(k).lower(): v for k, v in zip(df['ngen_name'], df['yf_ticker'])}
+            except Exception as e:
+                print(f"Error loading symbol map: {e}")
+                _SYMBOL_MAP = {}
         else:
+            print(f"Symbol map not found at {MAP_PATH}")
             _SYMBOL_MAP = {}
     return _SYMBOL_MAP
 
 def _get_ticker(stock_name: str) -> str:
     symbol_map = _load_symbol_map()
-    ticker = symbol_map.get(stock_name)
+    ticker = symbol_map.get(str(stock_name).lower())
     if ticker and pd.notna(ticker):
         return ticker
     # Fallback logic
-    fallback = stock_name.upper().replace(" ", "").replace(".", "")
+    fallback = str(stock_name).upper().replace(" ", "").replace(".", "")
     return f"{fallback}.NS"
 
 def get_price_metrics(stock_name: str) -> dict:
@@ -35,19 +40,46 @@ def get_price_metrics(stock_name: str) -> dict:
         "change_ytd": None, "change_1y": None, "error": None
     }
     try:
+        # Fetch data with higher reliability
         data = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
+        
         if data.empty:
-            result["error"] = f"No data for {ticker}"
+            # Try a second attempt with just the ticker base if it ends in .NS
+            if ticker.endswith(".NS"):
+                alt_ticker = ticker.replace(".NS", ".BO")
+                data = yf.download(alt_ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
+                if not data.empty:
+                    result["ticker"] = alt_ticker
+            
+        if data.empty:
+            result["error"] = f"No data found for {ticker} (tried fallback too)"
             return result
 
-        # Handle multi-index columns if present (yfinance sometimes returns them)
+        # Extract Close prices safely
         if isinstance(data.columns, pd.MultiIndex):
-            close = data['Close'][ticker].dropna()
+            # Ticker might be the second level
+            if 'Close' in data.columns.levels[0]:
+                close_df = data['Close']
+                # If ticker is a column in Close
+                if ticker in close_df.columns:
+                    close = close_df[ticker].dropna()
+                elif result["ticker"] in close_df.columns:
+                    close = close_df[result["ticker"]].dropna()
+                else:
+                    # Just take the first column of Close
+                    close = close_df.iloc[:, 0].dropna()
+            else:
+                result["error"] = f"Close column missing in MultiIndex for {ticker}"
+                return result
         else:
-            close = data['Close'].dropna()
+            if 'Close' in data.columns:
+                close = data['Close'].dropna()
+            else:
+                result["error"] = f"Close column missing for {ticker}"
+                return result
 
         if close.empty:
-            result["error"] = f"Close price column empty for {ticker}"
+            result["error"] = f"Price history empty for {ticker}"
             return result
 
         ltp = float(close.iloc[-1])
