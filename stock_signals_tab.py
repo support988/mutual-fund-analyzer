@@ -227,6 +227,16 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
             val = price_data[key]
             cols[i].metric(label, f"{val:+.2f}%" if val is not None else "N/A")
     
+    # --- Sector Context ---
+    sector_info = engine.get_sector_peers_activity(stock_name, lookback_months)
+    with st.expander("🌐 Sector Context", expanded=False):
+        st.write(f"**Sector:** {sector_info['sector']}")
+        if sector_info['is_rotation']:
+            st.info(f"🔎 {sector_info['peer_count']} other {sector_info['sector']} stocks also show New Entries this month: {', '.join(sector_info['peers'])}")
+            st.markdown("**Verdict:** → Possible sector-wide rotation")
+        else:
+            st.write(f"No other {sector_info['sector']} stocks show New Entries — appears stock-specific.")
+
     if new_entrant_funds:
         st.success(f"🆕 New Entrants ({len(new_entrant_funds)}): " + ", ".join(new_entrant_funds))
     

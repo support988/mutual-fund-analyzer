@@ -292,3 +292,37 @@ class StockActivityEngine:
             new_entrant_funds = []
         
         return pivot_df, new_entrant_funds
+
+    def get_sector_peers_activity(self, stock_name: str, lookback_months: int = 1):
+        """
+        Analyze peer activity within the same sector to identify potential rotation.
+        """
+        if self.master_df.empty:
+            return {"sector": "N/A", "peer_count": 0, "peers": [], "is_rotation": False}
+            
+        stock_info = self.master_df[self.master_df['stock_name'].str.lower() == stock_name.lower()]
+        if stock_info.empty:
+            return {"sector": "N/A", "peer_count": 0, "peers": [], "is_rotation": False}
+        
+        sector_name = stock_info['sector'].iloc[0]
+        
+        # Get all new entries in the window
+        new_entries_df = self.get_new_entries(threshold_pct=1.0, lookback_months=lookback_months)
+        
+        if new_entries_df.empty:
+            return {"sector": sector_name, "peer_count": 0, "peers": [], "is_rotation": False}
+            
+        peers_df = new_entries_df[
+            (new_entries_df['sector'] == sector_name) & 
+            (new_entries_df['stock_name'].str.lower() != stock_name.lower())
+        ]
+        
+        peers_list = sorted(peers_df['stock_name'].unique().tolist())
+        peer_count = len(peers_list)
+        
+        return {
+            "sector": sector_name,
+            "peer_count": peer_count,
+            "peers": peers_list,
+            "is_rotation": peer_count >= 1
+        }
