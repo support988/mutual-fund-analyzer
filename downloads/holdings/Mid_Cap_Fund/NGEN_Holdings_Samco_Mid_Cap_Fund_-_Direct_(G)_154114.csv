@@ -1,43 +1,44 @@
 Positions Over Time - Samco Mid Cap Fund - Direct (G)
-Type,Name,Sector,30-Apr-26,31-Mar-26,28-Feb-26
-Equity,Natl. Aluminium,Non Ferrous Metals,6.41,5.41,5.41
-Equity,L&T Finance Ltd,Finance,4.13,3.07,3.98
-Equity,Bank of Maha,Banks,4.13,2.77,3.65
-Equity,GE Vernova T&D,Capital Goods - Electrical Equipment,3.97,2.8,3.19
-Equity,Aditya Birla Cap,Finance,3.9,2.86,3.63
-Equity,Ashok Leyland,Automobile,3.89,3.2,4.83
-Equity,Indian Bank,Banks,3.85,3.31,4.25
-Equity,AU Small Finance,Banks,3.81,2.74,3.36
-Equity,Federal Bank,Banks,3.77,2.94,3.73
-Equity,BSE,Financial Services,3.7,-,-
-Equity,Apar Inds.,Capital Goods - Electrical Equipment,3.44,-,-
-Equity,Multi Comm. Exc.,Financial Services,3.44,-,-
-Equity,Bank of India,Banks,3.34,2.82,3.99
-Equity,Hitachi Energy,Capital Goods - Electrical Equipment,3.32,2.11,-
-Equity,ACC,Cement,3.18,-,-
-Equity,NMDC,Mining & Mineral products,3.08,2.41,2.78
-Equity,Hero Motocorp,Automobile,3.08,2.76,3.35
-Equity,Laurus Labs,Pharmaceuticals,3.05,-,-
-Equity,Life Insurance,Insurance,3.02,-,-
-Equity,General Insuranc,Insurance,2.97,-,-
-Equity,H P C L,Refineries,2.92,2.26,3.17
-Equity,Marico,FMCG,2.91,-,-
-Equity,Max Financial,Miscellaneous,2.85,2.44,3.17
-Equity,FSN E-Commerce,E-Commerce/App based Aggregator,2.85,2.18,2.66
-Equity,APL Apollo Tubes,Capital Goods-Non Electrical Equipment,2.8,2.47,3.06
-Equity,Indus Towers,Telecom Equipment & Infra Services,2.76,2.45,2.86
-Equity,Lupin,Pharmaceuticals,2.72,-,-
-Equity,Bharat Forge,"Castings, Forgings & Fastners",2.28,1.94,-
-Equity,MRF,Tyres,1.86,1.67,1.99
-Equity,LIC Housing Fin.,Finance,1.73,1.39,1.65
-Equity,Muthoot Finance,Finance,-,3.58,4.16
-Equity,Union Bank (I),Banks,-,3.41,4.63
-Equity,3M India,Diversified,-,2.26,3.02
-Equity,IRB Infra.Devl.,Infrastructure Developers & Operators,-,2.54,2.66
-Equity,IDBI Bank,Banks,-,1.58,3.2
-Equity,HDFC AMC,Finance,-,2.18,2.84
-Equity,GMR Airports,Miscellaneous,-,1.67,2.17
-Equity,Cummins India,Capital Goods-Non Electrical Equipment,-,2.78,3.24
-Equity,M & M Fin. Serv.,Finance,-,1.65,2.36
-Reverse Repo,C C I,Debt Others,1.05,-,1.82
-Net CA & Others,Net CA & Others,Debt Others,-0.21,22.35,5.19
+Type,Name,Sector,31-May-26,30-Apr-26,31-Mar-26,28-Feb-26
+Equity,Natl. Aluminium,Non Ferrous Metals,6.59,6.41,5.41,5.41
+Equity,GE Vernova T&D,Capital Goods - Electrical Equipment,4.43,3.97,2.8,3.19
+Equity,L&T Finance Ltd,Finance,4.09,4.13,3.07,3.98
+Equity,BSE,Financial Services,4.07,3.7,-,-
+Equity,Bank of Maha,Banks,4.04,4.13,2.77,3.65
+Equity,Aditya Birla Cap,Finance,3.97,3.9,2.86,3.63
+Equity,Hitachi Energy,Capital Goods - Electrical Equipment,3.68,3.32,2.11,-
+Equity,Federal Bank,Banks,3.67,3.77,2.94,3.73
+Equity,Laurus Labs,Pharmaceuticals,3.64,3.05,-,-
+Equity,Indian Bank,Banks,3.64,3.85,3.31,4.25
+Equity,Ashok Leyland,Automobile,3.61,3.89,3.2,4.83
+Equity,AU Small Finance,Banks,3.58,3.81,2.74,3.36
+Equity,Apar Inds.,Capital Goods - Electrical Equipment,3.54,3.44,-,-
+Equity,Multi Comm. Exc.,Financial Services,3.31,3.44,-,-
+Equity,Bank of India,Banks,3.23,3.34,2.82,3.99
+Equity,ACC,Cement,3.03,3.18,-,-
+Equity,Life Insurance,Insurance,3.01,3.02,-,-
+Equity,Marico,FMCG,2.98,2.91,-,-
+Equity,H P C L,Refineries,2.96,2.92,2.26,3.17
+Equity,Max Financial,Miscellaneous,2.91,2.85,2.44,3.17
+Equity,NMDC,Mining & Mineral products,2.9,3.08,2.41,2.78
+Equity,Indus Towers,Telecom Equipment & Infra Services,2.88,2.76,2.45,2.86
+Equity,Hero Motocorp,Automobile,2.86,3.08,2.76,3.35
+Equity,General Insuranc,Insurance,2.78,2.97,-,-
+Equity,FSN E-Commerce,E-Commerce/App based Aggregator,2.73,2.85,2.18,2.66
+Equity,APL Apollo Tubes,Capital Goods-Non Electrical Equipment,2.6,2.8,2.47,3.06
+Equity,Lupin,Pharmaceuticals,2.59,2.72,-,-
+Equity,Bharat Forge,"Castings, Forgings & Fastners",2.29,2.28,1.94,-
+Equity,Glenmark Pharma.,Pharmaceuticals,1.77,-,-,-
+Equity,LIC Housing Fin.,Finance,1.61,1.73,1.39,1.65
+Equity,Muthoot Finance,Finance,-,-,3.58,4.16
+Equity,Union Bank (I),Banks,-,-,3.41,4.63
+Equity,3M India,Diversified,-,-,2.26,3.02
+Equity,M & M Fin. Serv.,Finance,-,-,1.65,2.36
+Equity,IRB Infra.Devl.,Infrastructure Developers & Operators,-,-,2.54,2.66
+Equity,IDBI Bank,Banks,-,-,1.58,3.2
+Equity,HDFC AMC,Finance,-,-,2.18,2.84
+Equity,GMR Airports,Miscellaneous,-,-,1.67,2.17
+Equity,Cummins India,Capital Goods-Non Electrical Equipment,-,-,2.78,3.24
+Equity,MRF,Tyres,-,1.86,1.67,1.99
+Reverse Repo,C C I,Debt Others,1.17,1.05,-,1.82
+Net CA & Others,Net CA & Others,Debt Others,-0.16,-0.21,22.35,5.19

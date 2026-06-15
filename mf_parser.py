@@ -1,7 +1,9 @@
 import pandas as pd
 import io
 import datetime
+import streamlit as st
 
+@st.cache_data
 def parse_mf_csv(file_path):
     """
     Parses the specific Mutual Fund CSV format.

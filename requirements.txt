@@ -1,4 +1,4 @@
-PyQt6
+streamlit
 matplotlib
 numpy
 openpyxl
