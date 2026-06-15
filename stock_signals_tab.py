@@ -95,7 +95,9 @@ def render_stock_signals_tab(engine: StockActivityEngine):
                     df,
                     column_config={
                         "avg_recent_delta": st.column_config.NumberColumn("Avg Recent Delta %", format="%.2f%%"),
-                        "funds_accelerating": st.column_config.NumberColumn("Funds Accelerating")
+                        "funds_accelerating": st.column_config.NumberColumn("Funds Accelerating"),
+                        "avg_shares_change_pct": st.column_config.NumberColumn("Avg Shares Change %", format="%.2f%%"),
+                        "accumulation_type": st.column_config.TextColumn("Activity Type")
                     },
                     use_container_width=True,
                     hide_index=True,
@@ -104,6 +106,7 @@ def render_stock_signals_tab(engine: StockActivityEngine):
                     key="df_buildup_accel"
                 )
                 _render_export_button(df, "buildup_accel")
+                st.caption("💡 'Active Accumulation' = shares held actually increased >5%. 'Passive Drift' = weight % increased mainly due to relative portfolio value shifts.")
                 
                 if event.selection and event.selection.get("rows"):
                     selected_stock = df.iloc[event.selection["rows"][0]]["stock_name"]
@@ -135,7 +138,9 @@ def render_stock_signals_tab(engine: StockActivityEngine):
                         "avg_reduction_pct": st.column_config.NumberColumn("Avg Reduction %", format="%.2f%%"),
                         "avg_peak_weight": st.column_config.NumberColumn("Avg Peak Weight %", format="%.2f%%"),
                         "avg_current_weight": st.column_config.NumberColumn("Avg Current Weight %", format="%.2f%%"),
-                        "funds_reducing": st.column_config.NumberColumn("Funds Reducing")
+                        "funds_reducing": st.column_config.NumberColumn("Funds Reducing"),
+                        "avg_shares_change_pct": st.column_config.NumberColumn("Avg Shares Change %", format="%.2f%%"),
+                        "exit_type": st.column_config.TextColumn("Activity Type")
                     },
                     use_container_width=True,
                     hide_index=True,
@@ -144,6 +149,7 @@ def render_stock_signals_tab(engine: StockActivityEngine):
                     key="df_partial_exits"
                 )
                 _render_export_button(df, "partial_exits")
+                st.caption("💡 'Active Selling' = shares held actually decreased >5%. 'Passive Dilution' = weight % decreased mainly due to relative portfolio value shifts.")
                 
                 if event.selection and event.selection.get("rows"):
                     selected_stock = df.iloc[event.selection["rows"][0]]["stock_name"]
@@ -208,10 +214,14 @@ def _render_export_button(df, key):
     )
 
 def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
-    pivot_df, new_entrant_funds = engine.get_stock_detail_with_entrants(
+    weight_pivot, shares_pivot, new_entrant_funds = engine.get_stock_detail_with_entrants(
         stock_name, lookback_months, threshold_pct
     )
     
+    if weight_pivot.empty:
+        st.warning(f"No historical data found for {stock_name}")
+        return
+
     st.subheader(f"📌 {stock_name}")
 
     price_data = _cached_price_metrics(stock_name)
@@ -240,49 +250,69 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
     if new_entrant_funds:
         st.success(f"🆕 New Entrants ({len(new_entrant_funds)}): " + ", ".join(new_entrant_funds))
     
-    # --- Chart 1: New Entrants Only (highlighted, clean) ---
+    # --- VIEW TOGGLE ---
+    view_mode = st.radio(
+        "📊 View Mode",
+        ["Weight %", "Shares Held"],
+        horizontal=True,
+        key=f"view_mode_{stock_name}"
+    )
+
+    if view_mode == "Weight %":
+        active_pivot = weight_pivot
+        y_label = "Portfolio Weight %"
+        hover_fmt = '%{x|%b %Y}: %{y:.2f}%'
+    else:
+        active_pivot = shares_pivot
+        y_label = "Shares Held"
+        hover_fmt = '%{x|%b %Y}: %{y:,.0f} shares'
+
+    # --- Chart 1: New Entrants Only ---
     if new_entrant_funds:
-        st.markdown("**New Entrant Funds — Holdings Trajectory**")
+        st.markdown(f"**New Entrant Funds — {view_mode} Trajectory**")
         fig1 = go.Figure()
         for fund in new_entrant_funds:
-            if fund in pivot_df.columns:
-                series = pivot_df[fund].replace(0, None)
+            if fund in active_pivot.columns:
+                series = active_pivot[fund].replace(0, None)
                 fig1.add_trace(go.Scatter(
-                    x=pivot_df.index, y=series, name=fund,
+                    x=active_pivot.index, y=series, name=fund,
                     mode='lines+markers', line=dict(width=3),
-                    hovertemplate='%{x|%b %Y}: %{y:.2f}%'
+                    hovertemplate=hover_fmt
                 ))
         fig1.update_layout(
-            xaxis_title="Month", yaxis_title="Portfolio Weight %",
+            xaxis_title="Month", yaxis_title=y_label,
             hovermode="x unified", height=350,
             legend=dict(orientation="h", y=-0.3)
         )
-        st.plotly_chart(fig1, use_container_width=True)
+        st.plotly_chart(fig1, use_container_width=True, key=f"chart1_{stock_name}_{view_mode}")
     
-    # --- Chart 2: Top 10 Holders Only (by latest weight, decluttered) ---
-    st.markdown("**Top 10 Holders — Holdings Trajectory**")
-    # Identify latest date in pivot_df
-    if not pivot_df.empty:
-        latest_weights = pivot_df.iloc[0].sort_values(ascending=False)
-        top_10_funds = latest_weights.head(10).index.tolist()
-        
-        fig2 = go.Figure()
-        for fund in top_10_funds:
-            series = pivot_df[fund].replace(0, None)
+    # --- Chart 2: Top 10 Holders Only (Ranked by weight even in shares view) ---
+    st.markdown(f"**Top 10 Holders — {view_mode} Trajectory**")
+    latest_weights = weight_pivot.iloc[0].sort_values(ascending=False)
+    top_10_funds = latest_weights.head(10).index.tolist()
+    
+    fig2 = go.Figure()
+    for fund in top_10_funds:
+        if fund in active_pivot.columns:
+            series = active_pivot[fund].replace(0, None)
             is_new = fund in new_entrant_funds
             fig2.add_trace(go.Scatter(
-                x=pivot_df.index, y=series, name=fund,
+                x=active_pivot.index, y=series, name=fund,
                 mode='lines+markers',
                 line=dict(width=3 if is_new else 1.5, dash='solid' if is_new else 'dot'),
-                hovertemplate='%{x|%b %Y}: %{y:.2f}%'
+                hovertemplate=hover_fmt
             ))
-        fig2.update_layout(
-            xaxis_title="Month", yaxis_title="Portfolio Weight %",
-            hovermode="x unified", height=400,
-            legend=dict(orientation="v", x=1.02, y=1)
-        )
-        st.plotly_chart(fig2, use_container_width=True)
+    fig2.update_layout(
+        xaxis_title="Month", yaxis_title=y_label,
+        hovermode="x unified", height=400,
+        legend=dict(orientation="v", x=1.02, y=1)
+    )
+    st.plotly_chart(fig2, use_container_width=True, key=f"chart2_{stock_name}_{view_mode}")
     
-    # --- Full data table (collapsed) ---
-    with st.expander(f"📋 Full Holdings History — All {len(pivot_df.columns)} Funds"):
-        st.dataframe(pivot_df.style.format("{:.2f}", na_rep="-"), use_container_width=True)
+    # --- Full data tables ---
+    with st.expander(f"📋 Full Holdings History — All {len(weight_pivot.columns)} Funds"):
+        table_tab1, table_tab2 = st.tabs(["Weight % Table", "Shares Held Table"])
+        with table_tab1:
+            st.dataframe(weight_pivot.style.format("{:.2f}", na_rep="-"), use_container_width=True)
+        with table_tab2:
+            st.dataframe(shares_pivot.style.format("{:,.0f}", na_rep="-"), use_container_width=True)

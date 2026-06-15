@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 import glob
+import numpy as np
 from datetime import datetime
 
 class StockActivityEngine:
@@ -142,35 +143,67 @@ class StockActivityEngine:
             return pd.DataFrame()
             
         df = self.master_df
-        # Filter for months 0, 1, 2
-        history = df[df['months_back'].isin([0, 1, 2])]
+        # Filter for months 0, 1, 2 for acceleration, and also get shares at window start
+        # Use lookback_months for initial shares calculation
+        history = df[df['months_back'].isin([0, 1, 2, lookback_months])]
         
-        # Pivot to get weights for those 3 months
-        pivot = history.pivot_table(index=['stock_name', 'fund_name', 'sector', 'marketcapcat'], 
+        # Pivot for weights (acceleration check)
+        w_pivot = history.pivot_table(index=['stock_name', 'fund_name', 'sector', 'marketcapcat'], 
                                    columns='months_back', values='perc').reset_index()
         
-        # Ensure columns exist
+        # Pivot for shares (actual accumulation check)
+        s_pivot = history.pivot_table(index=['stock_name', 'fund_name'], 
+                                   columns='months_back', values='shares').reset_index()
+        
+        # Ensure weight columns exist
         for col in [0, 1, 2]:
-            if col not in pivot.columns:
-                pivot[col] = 0.0
+            if col not in w_pivot.columns:
+                w_pivot[col] = 0.0
+        w_pivot[[0, 1, 2]] = w_pivot[[0, 1, 2]].fillna(0.0)
         
-        pivot[[0, 1, 2]] = pivot[[0, 1, 2]].fillna(0.0)
-        
+        # Ensure shares columns exist (0 and lookback_months)
+        for col in [0, lookback_months]:
+            if col not in s_pivot.columns:
+                s_pivot[col] = 0.0
+        s_pivot[[0, lookback_months]] = s_pivot[[0, lookback_months]].fillna(0.0)
+
         # Acceleration logic
-        pivot['delta_recent'] = pivot[0] - pivot[1]
-        pivot['delta_prev'] = pivot[1] - pivot[2]
+        w_pivot['delta_recent'] = w_pivot[0] - w_pivot[1]
+        w_pivot['delta_prev'] = w_pivot[1] - w_pivot[2]
         
-        accelerating = pivot[(pivot['delta_recent'] > pivot['delta_prev']) & 
-                             (pivot['delta_recent'] > 0) & 
-                             (pivot['delta_prev'] > 0)].copy()
+        accelerating = w_pivot[(w_pivot['delta_recent'] > w_pivot['delta_prev']) & 
+                               (w_pivot['delta_recent'] > 0) & 
+                               (w_pivot['delta_prev'] > 0)].copy()
         
         if accelerating.empty:
             return pd.DataFrame()
             
+        # Merge shares data
+        accelerating = accelerating.merge(s_pivot[['stock_name', 'fund_name', 0, lookback_months]], on=['stock_name', 'fund_name'], how='left')
+        accelerating = accelerating.rename(columns={0: 'curr_shares', lookback_months: 'init_shares'})
+        
+        # Calculate shares change %
+        accelerating['shares_change_pct'] = np.where(
+            accelerating['init_shares'] > 0,
+            (accelerating['curr_shares'] - accelerating['init_shares']) / accelerating['init_shares'] * 100,
+            np.nan
+        )
+
+        # Classification (Active Accumulation, Passive Drift, Mixed)
+        conds = [
+            (accelerating['shares_change_pct'] > 5.0),
+            (accelerating['shares_change_pct'] < -5.0),
+            (accelerating['shares_change_pct'].between(-5.0, 5.0))
+        ]
+        choices = ["Active Accumulation", "Mixed (Other holdings growing faster)", "Passive Drift"]
+        accelerating['acc_type'] = np.select(conds, choices, default="Unknown")
+
         # Summary
         summary = accelerating.groupby(['stock_name', 'sector', 'marketcapcat']).agg(
             funds_accelerating=('fund_name', 'count'),
-            avg_recent_delta=('delta_recent', 'mean')
+            avg_recent_delta=('delta_recent', 'mean'),
+            avg_shares_change_pct=('shares_change_pct', 'mean'),
+            accumulation_type=('acc_type', lambda x: x.mode()[0] if not x.empty else "Mixed")
         ).reset_index()
         
         summary = summary[summary['funds_accelerating'] >= min_funds]
@@ -178,8 +211,6 @@ class StockActivityEngine:
         if summary.empty:
             return pd.DataFrame()
 
-        # top_funds - using a faster method than per-group lambda if possible
-        # but for string aggregation, this is concise.
         top_funds_map = accelerating.sort_values(['stock_name', 'delta_recent'], ascending=[True, False]) \
                                    .groupby('stock_name')['fund_name'] \
                                    .apply(lambda x: " | ".join(x.head(5))).rename('top_funds')
@@ -194,17 +225,23 @@ class StockActivityEngine:
             
         df = self.master_df
         # Current month
-        current = df[df['months_back'] == 0][['stock_name', 'fund_name', 'perc']].rename(columns={'perc': 'current_perc'})
+        current = df[df['months_back'] == 0][['stock_name', 'fund_name', 'perc', 'shares']].rename(
+            columns={'perc': 'current_perc', 'shares': 'curr_shares'}
+        )
         
         # Window window
         window = df[(df['months_back'] > 0) & (df['months_back'] <= lookback_months)]
         
         # Peak
-        peaks = window.groupby(['stock_name', 'fund_name', 'sector', 'marketcapcat'])['perc'].max().reset_index(name='peak_perc')
+        peaks = window.groupby(['stock_name', 'fund_name', 'sector', 'marketcapcat']).agg(
+            peak_perc=('perc', 'max'),
+            peak_shares=('shares', 'max')
+        ).reset_index()
         
         # Reduction
         merged = peaks[peaks['peak_perc'] >= 0.5].merge(current, on=['stock_name', 'fund_name'], how='left')
         merged['current_perc'] = merged['current_perc'].fillna(0.0)
+        merged['curr_shares'] = merged['curr_shares'].fillna(0.0)
         merged['reduction_pct'] = (merged['peak_perc'] - merged['current_perc']) / merged['peak_perc'] * 100
         
         qualifying = merged[merged['reduction_pct'] >= reduction_threshold_pct].copy()
@@ -212,12 +249,30 @@ class StockActivityEngine:
         if qualifying.empty:
             return pd.DataFrame()
             
+        # Shares change
+        qualifying['shares_change_pct'] = np.where(
+            qualifying['peak_shares'] > 0,
+            (qualifying['curr_shares'] - qualifying['peak_shares']) / qualifying['peak_shares'] * 100,
+            np.nan
+        )
+
+        # Classification
+        conds = [
+            (qualifying['shares_change_pct'] < -5.0),
+            (qualifying['shares_change_pct'] > 5.0),
+            (qualifying['shares_change_pct'].between(-5.0, 5.0))
+        ]
+        choices = ["Active Selling", "Mixed (Other holdings growing faster — not actively sold)", "Passive Dilution"]
+        qualifying['exit_type'] = np.select(conds, choices, default="Unknown")
+
         # Summary
         summary = qualifying.groupby(['stock_name', 'sector', 'marketcapcat']).agg(
             funds_reducing=('fund_name', 'count'),
             avg_reduction_pct=('reduction_pct', 'mean'),
             avg_peak_weight=('peak_perc', 'mean'),
             avg_current_weight=('current_perc', 'mean'),
+            avg_shares_change_pct=('shares_change_pct', 'mean'),
+            exit_type=('exit_type', lambda x: x.mode()[0] if not x.empty else "Mixed"),
             fund_names=('fund_name', lambda x: ", ".join(x))
         ).reset_index()
         
@@ -259,28 +314,27 @@ class StockActivityEngine:
         
         return summary.sort_values(by='funds_entering', ascending=False).reset_index(drop=True)
 
-    def get_stock_detail(self, stock_name: str) -> pd.DataFrame:
+    def get_stock_detail(self, stock_name: str):
         if self.master_df.empty:
-            return pd.DataFrame()
+            return pd.DataFrame(), pd.DataFrame()
             
         df = self.master_df[self.master_df['stock_name'].str.lower() == stock_name.lower()]
         
         if df.empty:
-            return pd.DataFrame()
+            return pd.DataFrame(), pd.DataFrame()
             
-        pivot = df.pivot_table(index='date', columns='fund_name', values='perc')
-        pivot = pivot.sort_index(ascending=False)
-        return pivot.fillna(0.0)
+        weight_pivot = df.pivot_table(index='date', columns='fund_name', values='perc', aggfunc='first')
+        shares_pivot = df.pivot_table(index='date', columns='fund_name', values='shares', aggfunc='first')
+        
+        weight_pivot = weight_pivot.sort_index(ascending=False).fillna(0.0)
+        shares_pivot = shares_pivot.sort_index(ascending=False).fillna(0.0)
+        return weight_pivot, shares_pivot
 
     def get_stock_detail_with_entrants(self, stock_name: str, lookback_months: int = 3, threshold_pct: float = 1.0):
         """
-        Returns a tuple: (pivot_df, new_entrant_fund_names)
-        
-        pivot_df: same as get_stock_detail() — rows=dates, columns=fund_names, values=perc
-        new_entrant_fund_names: list of fund names that are NEW ENTRANTS for this stock,
-                                 using the same logic as get_new_entries() filtered to this stock
+        Returns a tuple: (weight_pivot, shares_pivot, new_entrant_fund_names)
         """
-        pivot_df = self.get_stock_detail(stock_name)
+        w_pivot, s_pivot = self.get_stock_detail(stock_name)
         
         # Reuse new entries logic, filtered to this stock
         new_entries_df = self.get_new_entries(threshold_pct=threshold_pct, lookback_months=lookback_months)
@@ -291,7 +345,7 @@ class StockActivityEngine:
         else:
             new_entrant_funds = []
         
-        return pivot_df, new_entrant_funds
+        return w_pivot, s_pivot, new_entrant_funds
 
     def get_sector_peers_activity(self, stock_name: str, lookback_months: int = 1):
         """
