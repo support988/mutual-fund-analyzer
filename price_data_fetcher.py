@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 import os
 
 _SYMBOL_MAP = None
-MAP_PATH = r"D:\Mukul\TV\Project\MF\downloads\stock_symbol_map.csv"
+# Use relative path for cloud compatibility
+MAP_PATH = os.path.join(os.path.dirname(__file__), "downloads", "stock_symbol_map.csv")
 
 def _load_symbol_map():
     global _SYMBOL_MAP
