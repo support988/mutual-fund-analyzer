@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from stock_activity_engine import StockActivityEngine
+from price_data_fetcher import get_price_metrics
 
 # --- Cached Signal Wrappers ---
 @st.cache_data
@@ -19,6 +20,10 @@ def run_partial_exits(_engine, reduction_threshold_pct, lookback_months, min_fun
 @st.cache_data
 def run_herd_entries(_engine, min_funds, lookback_months):
     return _engine.get_herd_entries(min_funds, lookback_months)
+
+@st.cache_data(ttl=3600)
+def _cached_price_metrics(stock_name):
+    return get_price_metrics(stock_name)
 
 def render_stock_signals_tab(engine: StockActivityEngine):
     st.header("📊 Stock Signals")
@@ -45,7 +50,7 @@ def render_stock_signals_tab(engine: StockActivityEngine):
         df = st.session_state.get("new_entries_df")
         if df is not None:
             if not df.empty:
-                st.dataframe(
+                event = st.dataframe(
                     df,
                     column_config={
                         "entry_date": st.column_config.DateColumn("Entry Date", format="DD-MM-YYYY"),
@@ -55,11 +60,20 @@ def render_stock_signals_tab(engine: StockActivityEngine):
                         "total_fund_coverage": st.column_config.NumberColumn("Total Coverage")
                     },
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="df_new_entries"
                 )
                 _render_export_button(df, "new_entries")
                 st.caption("'Already Holding' = funds that owned this stock before this month. 'Total Coverage' = new entrants + existing holders.")
-                _render_stock_detail_section(engine, df, "new_entries", lookback_months, threshold_pct)
+                
+                if event.selection and event.selection.get("rows"):
+                    selected_stock = df.iloc[event.selection["rows"][0]]["stock_name"]
+                    st.divider()
+                    _render_stock_detail(engine, selected_stock, lookback_months, threshold_pct)
+                else:
+                    st.caption("👆 Click any row above to view detailed stock analysis")
             else:
                 st.info("No new entries found with current filters.")
 
@@ -77,17 +91,26 @@ def render_stock_signals_tab(engine: StockActivityEngine):
         df = st.session_state.get("buildup_accel_df")
         if df is not None:
             if not df.empty:
-                st.dataframe(
+                event = st.dataframe(
                     df,
                     column_config={
                         "avg_recent_delta": st.column_config.NumberColumn("Avg Recent Delta %", format="%.2f%%"),
                         "funds_accelerating": st.column_config.NumberColumn("Funds Accelerating")
                     },
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="df_buildup_accel"
                 )
                 _render_export_button(df, "buildup_accel")
-                _render_stock_detail_section(engine, df, "buildup_accel", lookback_months, 1.0)
+                
+                if event.selection and event.selection.get("rows"):
+                    selected_stock = df.iloc[event.selection["rows"][0]]["stock_name"]
+                    st.divider()
+                    _render_stock_detail(engine, selected_stock, lookback_months, 1.0)
+                else:
+                    st.caption("👆 Click any row above to view detailed stock analysis")
             else:
                 st.info("No buildup acceleration detected with current filters.")
 
@@ -106,7 +129,7 @@ def render_stock_signals_tab(engine: StockActivityEngine):
         df = st.session_state.get("partial_exits_df")
         if df is not None:
             if not df.empty:
-                st.dataframe(
+                event = st.dataframe(
                     df,
                     column_config={
                         "avg_reduction_pct": st.column_config.NumberColumn("Avg Reduction %", format="%.2f%%"),
@@ -115,10 +138,19 @@ def render_stock_signals_tab(engine: StockActivityEngine):
                         "funds_reducing": st.column_config.NumberColumn("Funds Reducing")
                     },
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="df_partial_exits"
                 )
                 _render_export_button(df, "partial_exits")
-                _render_stock_detail_section(engine, df, "partial_exits", lookback_months, 1.0)
+                
+                if event.selection and event.selection.get("rows"):
+                    selected_stock = df.iloc[event.selection["rows"][0]]["stock_name"]
+                    st.divider()
+                    _render_stock_detail(engine, selected_stock, lookback_months, 1.0)
+                else:
+                    st.caption("👆 Click any row above to view detailed stock analysis")
             else:
                 st.info("No partial exits detected with current filters.")
 
@@ -136,7 +168,7 @@ def render_stock_signals_tab(engine: StockActivityEngine):
         df = st.session_state.get("herd_entries_df")
         if df is not None:
             if not df.empty:
-                st.dataframe(
+                event = st.dataframe(
                     df,
                     column_config={
                         "avg_entry_weight": st.column_config.NumberColumn("Avg Entry Weight %", format="%.2f%%"),
@@ -144,10 +176,19 @@ def render_stock_signals_tab(engine: StockActivityEngine):
                         "first_entry_date": st.column_config.DateColumn("First Entry Date", format="DD-MM-YYYY")
                     },
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="df_herd_entries"
                 )
                 _render_export_button(df, "herd_entries")
-                _render_stock_detail_section(engine, df, "herd_entries", lookback_months, 1.0)
+                
+                if event.selection and event.selection.get("rows"):
+                    selected_stock = df.iloc[event.selection["rows"][0]]["stock_name"]
+                    st.divider()
+                    _render_stock_detail(engine, selected_stock, lookback_months, 1.0)
+                else:
+                    st.caption("👆 Click any row above to view detailed stock analysis")
             else:
                 st.info("No herd entries detected with current filters.")
 
@@ -166,22 +207,25 @@ def _render_export_button(df, key):
         key=f"dl_{key}"
     )
 
-def _render_stock_detail_section(engine, df, tab_key, lookback_months, threshold_pct):
-    if df is not None and not df.empty:
-        selected = st.selectbox(
-            "🔎 View stock detail:", 
-            options=["— select —"] + sorted(df["stock_name"].unique().tolist()),
-            key=f"detail_select_{tab_key}"
-        )
-        if selected != "— select —":
-            _render_stock_detail(engine, selected, lookback_months, threshold_pct)
-
 def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
     pivot_df, new_entrant_funds = engine.get_stock_detail_with_entrants(
         stock_name, lookback_months, threshold_pct
     )
     
     st.subheader(f"📌 {stock_name}")
+
+    price_data = _cached_price_metrics(stock_name)
+    if price_data["error"]:
+        st.caption(f"⚠️ Price data unavailable ({price_data['ticker']}) — {price_data['error']}")
+    else:
+        cols = st.columns(6)
+        cols[0].metric("LTP (₹)", f"{price_data['ltp']:.2f}")
+        for i, (label, key) in enumerate([
+            ("1M", "change_1m"), ("3M", "change_3m"), ("6M", "change_6m"),
+            ("YTD", "change_ytd"), ("1Y", "change_1y")
+        ], start=1):
+            val = price_data[key]
+            cols[i].metric(label, f"{val:+.2f}%" if val is not None else "N/A")
     
     if new_entrant_funds:
         st.success(f"🆕 New Entrants ({len(new_entrant_funds)}): " + ", ".join(new_entrant_funds))
