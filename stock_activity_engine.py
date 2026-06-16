@@ -145,9 +145,13 @@ class StockActivityEngine:
         df = self.master_df
         # Force integer to avoid type mismatch in column lookups
         lookback_months = int(lookback_months)
+        
+        # Defensive: Explicit relevant months list
+        # We need 0, 1, 2 for acceleration and 'lookback_months' for shares baseline
+        relevant_months = sorted(list(set([0, 1, 2, lookback_months])))
 
-        # Filter for months 0, 1, 2 for acceleration, and also get shares at window start
-        history = df[df['months_back'].isin([0, 1, 2, lookback_months])]
+        # Filter for relevant months
+        history = df[df['months_back'].isin(relevant_months)]
         
         # Pivot for weights (acceleration check)
         w_pivot = history.pivot_table(index=['stock_name', 'fund_name', 'sector', 'marketcapcat'], 
@@ -157,28 +161,26 @@ class StockActivityEngine:
         s_pivot = history.pivot_table(index=['stock_name', 'fund_name'], 
                                    columns='months_back', values='shares').reset_index()
         
-        # Ensure integer columns (some environments cast pivot columns to strings/objects)
+        # Defensive: Normalize column labels to integers (handles string-casting in some environments)
         for p_df in [w_pivot, s_pivot]:
             p_df.columns = [int(c) if (isinstance(c, str) and c.isdigit()) else c for c in p_df.columns]
 
-        # Ensure weight columns exist
-        for col in [0, 1, 2]:
+        # Defensive: Ensure all required columns exist in w_pivot and fillna
+        required_w = [0, 1, 2]
+        for col in required_w:
             if col not in w_pivot.columns:
                 w_pivot[col] = 0.0
+        w_pivot[required_w] = w_pivot[required_w].fillna(0.0)
         
-        # Use unique columns for fillna to avoid 'Columns must be same length as key' errors
-        fill_cols_w = list(set([0, 1, 2]))
-        w_pivot[fill_cols_w] = w_pivot[fill_cols_w].fillna(0.0)
-        
-        # Ensure shares columns exist (0 and lookback_months)
-        for col in [0, lookback_months]:
+        # Defensive: Ensure required columns exist in s_pivot and fillna
+        required_s = [0, lookback_months]
+        for col in required_s:
             if col not in s_pivot.columns:
                 s_pivot[col] = 0.0
-        
-        fill_cols_s = list(set([0, lookback_months]))
-        s_pivot[fill_cols_s] = s_pivot[fill_cols_s].fillna(0.0)
+        # set() handles case where lookback_months is 0
+        s_pivot[list(set(required_s))] = s_pivot[list(set(required_s))].fillna(0.0)
 
-        # Acceleration logic
+        # Acceleration logic - Explicitly assigned before filtering
         w_pivot['delta_recent'] = w_pivot[0] - w_pivot[1]
         w_pivot['delta_prev'] = w_pivot[1] - w_pivot[2]
         
@@ -189,7 +191,7 @@ class StockActivityEngine:
         if accelerating.empty:
             return pd.DataFrame()
             
-        # Merge shares data - Explicitly assign to avoid 'rename' collisions
+        # Merge shares data - Explicitly select and rename to avoid collisions
         s_subset = s_pivot[['stock_name', 'fund_name']].copy()
         s_subset['curr_shares'] = s_pivot[0]
         s_subset['init_shares'] = s_pivot[lookback_months]
