@@ -285,7 +285,8 @@ class StockActivityEngine:
         # 2. Sentiment Score Calculation
         score = 50
         # Positive
-        score += new_entrants_count * 10
+        entrant_score = min(30, new_entrants_count * 10)
+        score += entrant_score
         if is_accelerating: score += 15
         if is_herd_entry: score += 20
         if is_herd_entry and herd_count > 5: score += 10 # Bonus for large herd
@@ -334,20 +335,29 @@ class StockActivityEngine:
 
         # 4. Smart Money Heatmap (AMC)
         def get_amc(name):
-            # Simple AMC extractor
+            AMC_PREFIXES = {
+                "Aditya Birla": ["Aditya", "Birla"],
+                "Motilal Oswal": ["Motilal"],
+                "Baroda BNP": ["Baroda"],
+                "Franklin India": ["Franklin"],
+                "ICICI Prudential": ["ICICI"],
+                "LIC MF": ["LIC"],
+                "Invesco India": ["Invesco"],
+                "Nippon India": ["Nippon"],
+                "Kotak": ["Kotak"],
+                "HDFC": ["HDFC"],
+                "DSP": ["DSP"],
+                "Tata": ["Tata"],
+                "SBI": ["SBI"],
+                "Axis": ["Axis"],
+                "Mirae": ["Mirae"],
+            }
             parts = name.split(' ')
-            if len(parts) > 1:
-                # Common multi-word AMCs
-                if parts[0] in ["Invesco", "Aditya", "Baroda", "Motilal", "Franklin", "ICICI", "Kotak", "IDFC", "Canara", "Mirae", "Nippon"]:
-                    if parts[0] == "Aditya" and parts[1] == "Birla": return "Aditya Birla"
-                    if parts[0] == "Invesco" and parts[1] == "India": return "Invesco India"
-                    if parts[0] == "Motilal" and parts[1] == "Oswal": return "Motilal Oswal"
-                    if parts[0] == "Baroda" and parts[1] == "BNP": return "Baroda BNP"
-                    if parts[0] == "Franklin" and parts[1] == "India": return "Franklin India"
-                    if parts[0] == "ICICI" and parts[1] == "Pru": return "ICICI Pru"
-                    if parts[0] == "LIC" and parts[1] == "MF": return "LIC MF"
-                    return parts[0]
-            return parts[0]
+            first_word = parts[0]
+            for amc_name, prefixes in AMC_PREFIXES.items():
+                if first_word in prefixes:
+                    return amc_name
+            return first_word
 
         stock_df['amc'] = stock_df['fund_name'].apply(get_amc)
         amc_latest = stock_df[stock_df['months_back'] == 0]
@@ -393,9 +403,12 @@ class StockActivityEngine:
         phase = "Neutral"
         confidence = 50
         
-        if new_entrants_count > 0 and exits_count == 0 and acc_ratio > 60:
+        if new_entrants_count > 0 and exits_count <= 1 and acc_ratio > 60:
             phase = "Accumulation"
             confidence = acc_ratio
+        elif new_entrants_count > 0 and acc_ratio > 50:
+            phase = "Early Accumulation"
+            confidence = acc_ratio * 0.8
         elif is_accelerating and acc_ratio > 70:
             phase = "Markup"
             confidence = acc_ratio
@@ -441,7 +454,7 @@ class StockActivityEngine:
             cv = s_curr.get(f, 0)
             bv = s_base.get(f, 0)
             if cv > bv * 1.5 and bv > 0: aggressive.append(f)
-            elif cv > bv and cv <= bv * 1.1: quiet.append(f)
+            elif cv > bv and cv <= bv * 1.5: quiet.append(f)
             elif cv < bv * 0.5: exiting_categories.append(f)
 
         return {

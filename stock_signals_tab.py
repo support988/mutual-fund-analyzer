@@ -3,6 +3,9 @@ import pandas as pd
 import plotly.graph_objects as go
 from stock_activity_engine import StockActivityEngine
 from price_data_fetcher import get_price_metrics
+from groq import Groq
+
+groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 # --- Cached Signal Wrappers ---
 @st.cache_data
@@ -312,12 +315,11 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
             # Simplified probabilities based on sentiment score
             bull = min(95, max(5, score + (ar-50)/2))
             bear = min(95, max(5, (100-score) + (dr-50)/2))
-            neut = 100 - (bull + bear)
-            if neut < 0: 
-                total = bull + bear
-                bull = (bull/total)*100
-                bear = (bear/total)*100
-                neut = 0
+            combined = bull + bear
+            if combined > 95:
+                bull = (bull / combined) * 95
+                bear = (bear / combined) * 95
+            neut = 100 - bull - bear
             
             st.caption(f"Bullish: {bull:.1f}%")
             st.progress(bull/100)
@@ -337,15 +339,37 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
         Overall, the stock appears to be in a **{intel['phase']}** phase. 
         Sustained additions over the coming months will be critical for a trend reversal or continuation.
         """
-        st.write(summary_template)
         
         # Behavior Classification (Feature 6)
         behaviours = []
         if intel['metrics']['new_entrants'] > 5: behaviours.append("Herd Entry")
+        elif intel['metrics']['new_entrants'] > 2: behaviours.append("Coordinated Entry")
         elif intel['metrics']['new_entrants'] > 0: behaviours.append("Lone Buyer")
         if intel['sector_info']['is_rotation']: behaviours.append("Sector Rotation")
         if intel['metrics']['is_accelerating']: behaviours.append("Broad Accumulation")
         if intel['metrics']['is_partial_exit']: behaviours.append("Broad Distribution")
+
+        with st.spinner("Generating research summary..."):
+            try:
+                prompt = f"""Generate a 3-sentence institutional research summary for {stock_name}.
+Data: Sector={intel['sector']}, Phase={intel['phase']}, 
+Sentiment={intel['sentiment_score']}/100, 
+New Entrants={intel['metrics']['new_entrants']}, 
+Exits={intel['metrics']['exits']},
+Accumulation Ratio={intel['acc_ratio']:.1f}%,
+Sector Rotation={intel['sector_info']['is_rotation']},
+Behaviour={' + '.join(behaviours) if behaviours else 'Passive Holding'}.
+Write in the style of a sell-side equity research note. Be specific, use the numbers. No filler phrases."""
+
+                response = groq_client.chat.completions.create(
+                    model="llama3-8b-8192",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=200
+                )
+                st.write(response.choices[0].message.content)
+            except Exception as e:
+                st.write(summary_template)
+                st.caption(f"(Groq unavailable: {e})")
         
         st.markdown(f"**Current Behaviour:** `{' + '.join(behaviours) if behaviours else 'Passive Holding'}`")
 
