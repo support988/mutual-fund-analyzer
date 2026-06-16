@@ -143,8 +143,10 @@ class StockActivityEngine:
             return pd.DataFrame()
             
         df = self.master_df
+        # Force integer to avoid type mismatch in column lookups
+        lookback_months = int(lookback_months)
+
         # Filter for months 0, 1, 2 for acceleration, and also get shares at window start
-        # Use lookback_months for initial shares calculation
         history = df[df['months_back'].isin([0, 1, 2, lookback_months])]
         
         # Pivot for weights (acceleration check)
@@ -155,17 +157,26 @@ class StockActivityEngine:
         s_pivot = history.pivot_table(index=['stock_name', 'fund_name'], 
                                    columns='months_back', values='shares').reset_index()
         
+        # Ensure integer columns (some environments cast pivot columns to strings/objects)
+        for p_df in [w_pivot, s_pivot]:
+            p_df.columns = [int(c) if (isinstance(c, str) and c.isdigit()) else c for c in p_df.columns]
+
         # Ensure weight columns exist
         for col in [0, 1, 2]:
             if col not in w_pivot.columns:
                 w_pivot[col] = 0.0
-        w_pivot[[0, 1, 2]] = w_pivot[[0, 1, 2]].fillna(0.0)
+        
+        # Use unique columns for fillna to avoid 'Columns must be same length as key' errors
+        fill_cols_w = list(set([0, 1, 2]))
+        w_pivot[fill_cols_w] = w_pivot[fill_cols_w].fillna(0.0)
         
         # Ensure shares columns exist (0 and lookback_months)
         for col in [0, lookback_months]:
             if col not in s_pivot.columns:
                 s_pivot[col] = 0.0
-        s_pivot[[0, lookback_months]] = s_pivot[[0, lookback_months]].fillna(0.0)
+        
+        fill_cols_s = list(set([0, lookback_months]))
+        s_pivot[fill_cols_s] = s_pivot[fill_cols_s].fillna(0.0)
 
         # Acceleration logic
         w_pivot['delta_recent'] = w_pivot[0] - w_pivot[1]
@@ -178,8 +189,11 @@ class StockActivityEngine:
         if accelerating.empty:
             return pd.DataFrame()
             
-        # Merge shares data
-        s_subset = s_pivot[['stock_name', 'fund_name', 0, lookback_months]].rename(columns={0: 'curr_shares', lookback_months: 'init_shares'})
+        # Merge shares data - Explicitly assign to avoid 'rename' collisions
+        s_subset = s_pivot[['stock_name', 'fund_name']].copy()
+        s_subset['curr_shares'] = s_pivot[0]
+        s_subset['init_shares'] = s_pivot[lookback_months]
+        
         accelerating = accelerating.merge(s_subset, on=['stock_name', 'fund_name'], how='left')
         
         # Calculate shares change %
