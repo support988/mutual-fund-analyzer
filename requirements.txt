@@ -7,3 +7,4 @@ rapidfuzz
 yfinance
 plotly
 groq
+python-dotenv

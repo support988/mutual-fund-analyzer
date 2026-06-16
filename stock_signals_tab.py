@@ -3,9 +3,6 @@ import pandas as pd
 import plotly.graph_objects as go
 from stock_activity_engine import StockActivityEngine
 from price_data_fetcher import get_price_metrics
-from groq import Groq
-
-groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 # --- Cached Signal Wrappers ---
 @st.cache_data
@@ -23,6 +20,10 @@ def run_partial_exits(_engine, reduction_threshold_pct, lookback_months, min_fun
 @st.cache_data
 def run_herd_entries(_engine, min_funds, lookback_months):
     return _engine.get_herd_entries(min_funds, lookback_months)
+
+@st.cache_data(ttl=1800)
+def run_institutional_intelligence(_engine, stock_name, lookback_months):
+    return _engine.get_institutional_intelligence(stock_name, lookback_months)
 
 @st.cache_data(ttl=3600)
 def _cached_price_metrics(stock_name):
@@ -217,13 +218,36 @@ def _render_export_button(df, key):
     )
 
 def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
-    intel = engine.get_institutional_intelligence(stock_name, lookback_months)
+    intel = run_institutional_intelligence(engine, stock_name, lookback_months)
     if not intel:
         st.warning(f"Insufficient data to generate intelligence for {stock_name}")
         return
 
     st.title(f"🏛️ Institutional Intelligence: {stock_name}")
     st.caption(f"Analysis based on {lookback_months}-month window | Sector: {intel['sector']}")
+
+    price_data = _cached_price_metrics(stock_name)
+    if price_data:
+        with st.container(border=True):
+            st.markdown("### 📈 Price & Market Data")
+            pc1, pc2, pc3, pc4, pc5, pc6, pc7 = st.columns(7)
+            pc1.metric("LTP", f"₹{price_data.get('ltp', 'N/A')}")
+            
+            v1m = price_data.get('change_1m')
+            pc2.metric("1M", f"{v1m}%" if v1m is not None else "N/A", delta=v1m if v1m is not None else None)
+            v3m = price_data.get('change_3m')
+            pc3.metric("3M", f"{v3m}%" if v3m is not None else "N/A", delta=v3m if v3m is not None else None)
+            v6m = price_data.get('change_6m')
+            pc4.metric("6M", f"{v6m}%" if v6m is not None else "N/A", delta=v6m if v6m is not None else None)
+            vytd = price_data.get('change_ytd')
+            pc5.metric("YTD", f"{vytd}%" if vytd is not None else "N/A", delta=vytd if vytd is not None else None)
+            v1y = price_data.get('change_1y')
+            pc6.metric("1Y", f"{v1y}%" if v1y is not None else "N/A", delta=v1y if v1y is not None else None)
+            
+            high = price_data.get('52w_high')
+            low = price_data.get('52w_low')
+            range_str = f"₹{low} — ₹{high}" if high and low else "Unavailable"
+            pc7.metric("52W Range", range_str)
 
     # --- ROW 1: Thesis Card & Sentiment ---
     col_thesis, col_score = st.columns([3, 2])
@@ -319,26 +343,21 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
             if combined > 95:
                 bull = (bull / combined) * 95
                 bear = (bear / combined) * 95
-            neut = 100 - bull - bear
             
-            st.caption(f"Bullish: {bull:.1f}%")
-            st.progress(bull/100)
-            st.caption(f"Neutral: {neut:.1f}%")
-            st.progress(neut/100)
-            st.caption(f"Bearish: {bear:.1f}%")
-            st.progress(bear/100)
+            neut = max(0, 100 - bull - bear)
+            bull = round(bull, 1)
+            bear = round(bear, 1)
+            neut = round(neut, 1)
+            st.caption(f"Bullish: {bull}%")
+            st.progress(min(1.0, bull/100))
+            st.caption(f"Neutral: {neut}%")
+            st.progress(min(1.0, neut/100))
+            st.caption(f"Bearish: {bear}%")
+            st.progress(min(1.0, bear/100))
 
     # --- ROW 3: Research Summary ---
     with st.container(border=True):
         st.markdown("### 📝 Institutional Research Summary")
-        summary_template = f"""
-        Institutional participation in **{stock_name}** appears to be {label.lower()}. 
-        Fresh entries are { 'emerging' if intel['metrics']['new_entrants'] > 0 else 'absent' } 
-        while selling pressure remains { 'significant' if intel['metrics']['exits'] > 0 else 'fragmented' }. 
-        Sector participation indicates that the movement may be { 'part of a broader rotation' if intel['sector_info']['is_rotation'] else 'stock-specific' } into **{intel['sector']}**. 
-        Overall, the stock appears to be in a **{intel['phase']}** phase. 
-        Sustained additions over the coming months will be critical for a trend reversal or continuation.
-        """
         
         # Behavior Classification (Feature 6)
         behaviours = []
@@ -349,27 +368,40 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
         if intel['metrics']['is_accelerating']: behaviours.append("Broad Accumulation")
         if intel['metrics']['is_partial_exit']: behaviours.append("Broad Distribution")
 
-        with st.spinner("Generating research summary..."):
-            try:
-                prompt = f"""Generate a 3-sentence institutional research summary for {stock_name}.
-Data: Sector={intel['sector']}, Phase={intel['phase']}, 
-Sentiment={intel['sentiment_score']}/100, 
-New Entrants={intel['metrics']['new_entrants']}, 
+        summary = (
+            f"{intel['metrics']['new_entrants']} funds entered {stock_name} "
+            f"over the past {lookback_months} months against {intel['metrics']['exits']} exits, "
+            f"producing an accumulation ratio of {intel['acc_ratio']:.0f}%. "
+            f"Institutional sentiment scores at {intel['sentiment_score']}/100 ({label}), "
+            f"with the stock currently in a {intel['phase']} phase. "
+            f"{'Sector rotation across ' + intel['sector'] + ' peers supports the move.' if intel['sector_info']['is_rotation'] else 'Activity appears stock-specific rather than sector-driven.'}"
+        )
+        st.write(summary)
+
+        with st.expander("🤖 AI Analysis (Groq)", expanded=False):
+            if st.button("Generate AI Summary", key=f"groq_btn_{stock_name}"):
+                with st.spinner("Generating AI research summary..."):
+                    try:
+                        from groq import Groq
+                        import os
+                        groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+                        prompt = f"""Generate a 3-sentence institutional research summary for {stock_name}.
+Data: Sector={intel['sector']}, Phase={intel['phase']},
+Sentiment={intel['sentiment_score']}/100,
+New Entrants={intel['metrics']['new_entrants']},
 Exits={intel['metrics']['exits']},
 Accumulation Ratio={intel['acc_ratio']:.1f}%,
 Sector Rotation={intel['sector_info']['is_rotation']},
 Behaviour={' + '.join(behaviours) if behaviours else 'Passive Holding'}.
 Write in the style of a sell-side equity research note. Be specific, use the numbers. No filler phrases."""
-
-                response = groq_client.chat.completions.create(
-                    model="llama3-8b-8192",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=200
-                )
-                st.write(response.choices[0].message.content)
-            except Exception as e:
-                st.write(summary_template)
-                st.caption(f"(Groq unavailable: {e})")
+                        response = groq_client.chat.completions.create(
+                            model="llama-3.1-8b-instant",
+                            messages=[{"role": "user", "content": prompt}],
+                            max_tokens=200
+                        )
+                        st.write(response.choices[0].message.content)
+                    except Exception as e:
+                        st.warning(f"Groq unavailable: {e}")
         
         st.markdown(f"**Current Behaviour:** `{' + '.join(behaviours) if behaviours else 'Passive Holding'}`")
 
@@ -414,7 +446,7 @@ Write in the style of a sell-side equity research note. Be specific, use the num
 
     st.divider()
     # --- EXISTING Trajectory Charts ---
-    weight_pivot, shares_pivot, _ = engine.get_stock_detail_with_entrants(stock_name, lookback_months, threshold_pct)
+    weight_pivot, shares_pivot, new_entrant_funds = engine.get_stock_detail_with_entrants(stock_name, lookback_months, threshold_pct)
     
     # --- VIEW TOGGLE ---
     view_mode = st.radio(

@@ -3,12 +3,16 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv() # Load environment variables from .env
 
 from analyzer import MFAnalyzer
 from exporter import export_to_excel
 from path_utils import get_app_data_path
 from ngen_data_loader import scan_downloads, BASE_DIR
 from stock_signals_tab import render_stock_signals_tab
+from ui.holdings_history import show_holdings_history
 
 # --- Cached Resource for Stock Activity Engine ---
 @st.cache_resource
@@ -191,7 +195,8 @@ st.title("Mutual Fund Portfolio Overlap & Concentration Tracker")
 tabs = st.tabs([
     "File Management", "Overlap Analysis", 
     "Concentration Tracker", "Trend Analysis", 
-    "Behavioral Insights", "Stock Signals"
+    "Behavioral Insights", "Stock Signals",
+    "History & Sync"
 ])
 
 ver = st.session_state.selection_version
@@ -394,3 +399,7 @@ with tabs[4]:
 with tabs[5]:
     engine = load_engine()
     render_stock_signals_tab(engine)
+
+# 7. History & Sync
+with tabs[6]:
+    show_holdings_history(st.session_state.analyzer)

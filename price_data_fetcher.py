@@ -9,7 +9,9 @@ def get_price_metrics(stock_name: str) -> dict:
     result = {
         "ticker": ticker, "ltp": None,
         "change_1m": None, "change_3m": None, "change_6m": None,
-        "change_ytd": None, "change_1y": None, "error": None
+        "change_ytd": None, "change_1y": None, 
+        "52w_high": None, "52w_low": None,
+        "error": None
     }
     try:
         # Fetch data with higher reliability
@@ -72,6 +74,14 @@ def get_price_metrics(stock_name: str) -> dict:
         result["change_6m"] = pct_change_from(days_back=182)
         result["change_1y"] = pct_change_from(days_back=365)
         result["change_ytd"] = pct_change_from(target_date=datetime(latest_date.year, 1, 1))
+
+        # Add 52w info using fast_info
+        try:
+            t_info = yf.Ticker(result["ticker"]).fast_info
+            result["52w_high"] = round(float(t_info.year_high), 2)
+            result["52w_low"] = round(float(t_info.year_low), 2)
+        except Exception as e:
+            print(f"[DEBUG] 52w fetch failed for {result['ticker']}: {e}")
 
     except Exception as e:
         result["error"] = str(e)

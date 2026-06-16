@@ -283,23 +283,11 @@ class StockActivityEngine:
         is_partial_exit = not pe_df[pe_df['stock_name'].str.lower() == stock_name.lower()].empty
 
         # 2. Sentiment Score Calculation
-        score = 50
-        # Positive
-        entrant_score = min(30, new_entrants_count * 10)
-        score += entrant_score
-        if is_accelerating: score += 15
-        if is_herd_entry: score += 20
-        if is_herd_entry and herd_count > 5: score += 10 # Bonus for large herd
-        
-        # Sector Participation
         sector_info = self.get_sector_peers_activity(stock_name, lookback_months)
-        if sector_info['is_rotation']: score += 15
-        
-        # Negative
-        if is_partial_exit: score -= 10
-        score -= exits_count * 15
         
         # Top Holder Changes
+        top_holder_addition = 0
+        top_holder_deduction = 0
         weight_pivot, shares_pivot = self.get_stock_detail(stock_name)
         if not weight_pivot.empty and len(weight_pivot) >= 2:
             latest_w = weight_pivot.iloc[0]
@@ -307,10 +295,53 @@ class StockActivityEngine:
             top_3_funds = latest_w.sort_values(ascending=False).head(3).index.tolist()
             for f in top_3_funds:
                 if f in prev_w.index:
-                    if latest_w[f] > prev_w[f] * 1.05: score += 10 # Top holder adding
-                    if latest_w[f] < prev_w[f] * 0.95: score -= 10 # Top holder reducing
+                    if latest_w[f] > prev_w[f] * 1.05: top_holder_addition += 10
+                    if latest_w[f] < prev_w[f] * 0.95: top_holder_deduction += 10
 
+        POSITIVE_WEIGHTS = {
+            "new_entrants": 10,
+            "acceleration": 15,
+            "herd_entry": 20,
+            "large_herd_bonus": 10,
+            "sector_rotation": 15,
+        }
+        NEGATIVE_WEIGHTS = {
+            "partial_exit": 15,
+            "per_exit": 15,
+            "top_holder_deduction": 20,
+            "broad_selling": 20,
+        }
+
+        positive_total = 0
+        positive_total += min(30, new_entrants_count * POSITIVE_WEIGHTS["new_entrants"])
+        if is_accelerating:
+            positive_total += POSITIVE_WEIGHTS["acceleration"]
+        if is_herd_entry:
+            positive_total += POSITIVE_WEIGHTS["herd_entry"]
+            if herd_count > 5:
+                positive_total += POSITIVE_WEIGHTS["large_herd_bonus"]
+        if sector_info['is_rotation']:
+            positive_total += POSITIVE_WEIGHTS["sector_rotation"]
+        positive_total += min(20, top_holder_addition)
+
+        negative_total = 0
+        if is_partial_exit:
+            negative_total += NEGATIVE_WEIGHTS["partial_exit"]
+        # REMOVE the old min(30, ...) cap — exits must be able to fully offset positives
+        negative_total += exits_count * NEGATIVE_WEIGHTS["per_exit"]
+        negative_total += min(20, top_holder_deduction)
+
+        net_shift = positive_total - negative_total
+        score = 50 + net_shift
         score = max(0, min(100, score))
+
+        print("\n--- SENTIMENT SCORE DEBUG ---")
+        print(f"Stock: {stock_name}")
+        print(f"positive_total: {positive_total}, negative_total: {negative_total}, net_shift: {net_shift}, final score: {score}")
+        print(f"new_entrants: {new_entrants_count}, exits: {exits_count}, accel: {is_accelerating}, herd: {is_herd_entry} ({herd_count} funds)")
+        print(f"rotation: {sector_info['is_rotation']}, partial_exit: {is_partial_exit}")
+        print(f"top_holder_add: {top_holder_addition}, top_holder_ded: {top_holder_deduction}")
+        print("--- END DEBUG ---\n")
 
         # 3. Accumulation vs Distribution
         # Compare current shares total vs baseline shares total for funds present in both OR new entrants
@@ -329,14 +360,16 @@ class StockActivityEngine:
             if diff > 0: added_shares += diff
             else: removed_shares += abs(diff)
             
-        acc_ratio = 0
-        if (added_shares + removed_shares) > 0:
+        acc_ratio = 50  # Default to neutral when insufficient history
+        if baseline_df.empty:
+            acc_ratio = 50  # Cannot determine direction without baseline
+        elif (added_shares + removed_shares) > 0:
             acc_ratio = (added_shares / (added_shares + removed_shares)) * 100
 
         # 4. Smart Money Heatmap (AMC)
         def get_amc(name):
             AMC_PREFIXES = {
-                "Aditya Birla": ["Aditya", "Birla"],
+                "Aditya Birla": ["Aditya"],
                 "Motilal Oswal": ["Motilal"],
                 "Baroda BNP": ["Baroda"],
                 "Franklin India": ["Franklin"],
@@ -344,6 +377,7 @@ class StockActivityEngine:
                 "LIC MF": ["LIC"],
                 "Invesco India": ["Invesco"],
                 "Nippon India": ["Nippon"],
+                "Canara Robeco": ["Canara"],
                 "Kotak": ["Kotak"],
                 "HDFC": ["HDFC"],
                 "DSP": ["DSP"],
@@ -351,6 +385,21 @@ class StockActivityEngine:
                 "SBI": ["SBI"],
                 "Axis": ["Axis"],
                 "Mirae": ["Mirae"],
+                "Quant": ["Quant"],
+                "Bandhan": ["Bandhan"],
+                "Edelweiss": ["Edelweiss"],
+                "WhiteOak": ["WhiteOak"],
+                "Sundaram": ["Sundaram"],
+                "Union": ["Union"],
+                "UTI": ["UTI"],
+                "PGIM": ["PGIM"],
+                "JM": ["JM"],
+                "Navi": ["Navi"],
+                "ITI": ["ITI"],
+                "Groww": ["Groww"],
+                "Samco": ["Samco"],
+                "Trust": ["Trust"],
+                "NJ": ["NJ"],
             }
             parts = name.split(' ')
             first_word = parts[0]
@@ -403,21 +452,24 @@ class StockActivityEngine:
         phase = "Neutral"
         confidence = 50
         
-        if new_entrants_count > 0 and exits_count <= 1 and acc_ratio > 60:
+        if is_accelerating and acc_ratio > 70 and new_entrants_count > 0:
+            phase = "Markup"
+            confidence = acc_ratio
+        elif new_entrants_count > 0 and exits_count <= 1 and acc_ratio > 60:
             phase = "Accumulation"
             confidence = acc_ratio
         elif new_entrants_count > 0 and acc_ratio > 50:
             phase = "Early Accumulation"
             confidence = acc_ratio * 0.8
-        elif is_accelerating and acc_ratio > 70:
-            phase = "Markup"
-            confidence = acc_ratio
-        elif is_partial_exit and acc_ratio < 40:
+        elif is_partial_exit and exits_count > 2 and acc_ratio < 40:
             phase = "Distribution"
             confidence = 100 - acc_ratio
         elif exits_count > 2 and acc_ratio < 30:
             phase = "Decline"
             confidence = 100 - acc_ratio
+        elif acc_ratio > 50 and is_accelerating:
+            phase = "Moderate Accumulation"
+            confidence = acc_ratio * 0.7
 
         # 6. Timeline Narrative
         timeline = []
@@ -434,7 +486,10 @@ class StockActivityEngine:
                 curr_m_funds = m_df['fund_name'].unique()
                 new_m = [f for f in curr_m_funds if f not in prev_m_funds]
                 if new_m:
-                    events.append(f"{len(new_m)} new funds entered ({get_amc(new_m[0])}...)")
+                    unique_amcs = list(dict.fromkeys([get_amc(f) for f in new_m]))
+                    amc_str = ", ".join(unique_amcs[:3])
+                    if len(unique_amcs) > 3: amc_str += "..."
+                    events.append(f"{len(new_m)} new funds entered ({amc_str})")
                 
                 ex_m = [f for f in prev_m_funds if f not in curr_m_funds]
                 if ex_m:
@@ -453,9 +508,16 @@ class StockActivityEngine:
         for f in all_funds:
             cv = s_curr.get(f, 0)
             bv = s_base.get(f, 0)
-            if cv > bv * 1.5 and bv > 0: aggressive.append(f)
-            elif cv > bv and cv <= bv * 1.5: quiet.append(f)
-            elif cv < bv * 0.5: exiting_categories.append(f)
+            if bv == 0 and cv > 0:
+                aggressive.append(f)  # New entrant = most aggressive by definition
+            elif cv > bv * 1.5 and bv > 0:
+                aggressive.append(f)
+            elif cv > bv * 1.1 and cv <= bv * 1.5:
+                quiet.append(f)  # 10-50% increase = quiet accumulator
+            elif bv > 0 and cv == 0:
+                exiting_categories.append(f)  # Full exit
+            elif bv > 0 and cv < bv * 0.5:
+                exiting_categories.append(f)  # >50% reduction
 
         return {
             "stock_name": stock_name,
