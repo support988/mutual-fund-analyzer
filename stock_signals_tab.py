@@ -214,41 +214,183 @@ def _render_export_button(df, key):
     )
 
 def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
-    weight_pivot, shares_pivot, new_entrant_funds = engine.get_stock_detail_with_entrants(
-        stock_name, lookback_months, threshold_pct
-    )
-    
-    if weight_pivot.empty:
-        st.warning(f"No historical data found for {stock_name}")
+    intel = engine.get_institutional_intelligence(stock_name, lookback_months)
+    if not intel:
+        st.warning(f"Insufficient data to generate intelligence for {stock_name}")
         return
 
-    st.subheader(f"📌 {stock_name}")
+    st.title(f"🏛️ Institutional Intelligence: {stock_name}")
+    st.caption(f"Analysis based on {lookback_months}-month window | Sector: {intel['sector']}")
 
-    price_data = _cached_price_metrics(stock_name)
-    if price_data["error"]:
-        st.caption(f"⚠️ Price data unavailable ({price_data['ticker']}) — {price_data['error']}")
-    else:
-        cols = st.columns(6)
-        cols[0].metric("LTP (₹)", f"{price_data['ltp']:.2f}")
-        for i, (label, key) in enumerate([
-            ("1M", "change_1m"), ("3M", "change_3m"), ("6M", "change_6m"),
-            ("YTD", "change_ytd"), ("1Y", "change_1y")
-        ], start=1):
-            val = price_data[key]
-            cols[i].metric(label, f"{val:+.2f}%" if val is not None else "N/A")
+    # --- ROW 1: Thesis Card & Sentiment ---
+    col_thesis, col_score = st.columns([3, 2])
     
-    # --- Sector Context ---
-    sector_info = engine.get_sector_peers_activity(stock_name, lookback_months)
-    with st.expander("🌐 Sector Context", expanded=False):
-        st.write(f"**Sector:** {sector_info['sector']}")
-        if sector_info['is_rotation']:
-            st.info(f"🔎 {sector_info['peer_count']} other {sector_info['sector']} stocks also show New Entries this month: {', '.join(sector_info['peers'])}")
-            st.markdown("**Verdict:** → Possible sector-wide rotation")
-        else:
-            st.write(f"No other {sector_info['sector']} stocks show New Entries — appears stock-specific.")
+    with col_thesis:
+        with st.container(border=True):
+            st.markdown("### 📜 Institutional Thesis")
+            
+            # What is happening?
+            m = intel['metrics']
+            happening = []
+            if m['new_entrants'] > 0: happening.append(f"{m['new_entrants']} new funds entered")
+            if m['is_accelerating']: happening.append("accumulation speed is accelerating")
+            if m['is_herd_entry']: happening.append(f"herd entry detected ({m['herd_count']} funds)")
+            if m['exits'] > 0: happening.append(f"{m['exits']} funds exited completely")
+            if m['is_partial_exit']: happening.append("significant partial exits observed")
+            
+            narrative_happening = ". ".join(happening).capitalize() + "." if happening else "No significant institutional activity detected."
+            st.write(f"**What is happening?**\n{narrative_happening}")
+            
+            # Who is buying/selling?
+            b_col, s_col = st.columns(2)
+            with b_col:
+                st.write("**Top Buyers**")
+                if intel['new_entrant_names']:
+                    for n in intel['new_entrant_names']: st.caption(f"✅ {n}")
+                else: st.caption("No new entrants")
+            with s_col:
+                st.write("**Top Sellers**")
+                if intel['exit_names']:
+                    for n in intel['exit_names']: st.caption(f"❌ {n}")
+                else: st.caption("No complete exits")
+            
+            # Interpretation
+            interpretation = ""
+            if intel['sector_info']['is_rotation']:
+                interpretation = f"Buying appears to be driven by sector rotation in **{intel['sector']}** rather than stock-specific events."
+            else:
+                interpretation = "The buying appears stock-specific, suggesting improving institutional conviction toward the company."
+            st.write(f"**Interpretation:** {interpretation}")
 
-    if new_entrant_funds:
-        st.success(f"🆕 New Entrants ({len(new_entrant_funds)}): " + ", ".join(new_entrant_funds))
+    with col_score:
+        with st.container(border=True):
+            st.markdown("### 🚦 Institutional Sentiment")
+            score = intel['sentiment_score']
+            
+            # Visual Gauge
+            st.markdown(f"**Score: {score} / 100**")
+            # Create a manual gauge-like progress bar
+            color = "red"
+            if score > 80: color = "green"; label = "Strong Bullish"
+            elif score > 60: color = "blue"; label = "Bullish"
+            elif score > 40: color = "gray"; label = "Neutral"
+            elif score > 20: color = "orange"; label = "Bearish"
+            else: color = "red"; label = "Very Bearish"
+            
+            st.progress(score/100)
+            st.markdown(f"**Verdict:** <span style='color:{color}; font-weight:bold; font-size:20px;'>{label}</span>", unsafe_allow_html=True)
+            
+            st.divider()
+            st.markdown("### 🔄 Market Phase")
+            st.markdown(f"**Phase:** `{intel['phase']}`")
+            st.progress(intel['confidence']/100)
+            st.caption(f"Confidence: {intel['confidence']:.1f}%")
+
+    # --- ROW 2: Acc vs Dist & Probability ---
+    col_acc, col_prob = st.columns(2)
+    
+    with col_acc:
+        with st.container(border=True):
+            st.markdown("### ⚖️ Accumulation vs Distribution")
+            ar = intel['acc_ratio']
+            dr = 100 - ar
+            
+            st.write(f"**Accumulation: {ar:.1f}%**")
+            st.progress(ar/100)
+            st.write(f"**Distribution: {dr:.1f}%**")
+            st.progress(dr/100)
+            
+            if ar > 70: interp = "Strong Accumulation"
+            elif ar > 50: interp = "Moderate Accumulation"
+            elif ar > 40: interp = "Balanced"
+            else: interp = "Distribution"
+            st.info(f"Verdict: {interp}")
+
+    with col_prob:
+        with st.container(border=True):
+            st.markdown("### 🎲 Probability Matrix")
+            # Simplified probabilities based on sentiment score
+            bull = min(95, max(5, score + (ar-50)/2))
+            bear = min(95, max(5, (100-score) + (dr-50)/2))
+            neut = 100 - (bull + bear)
+            if neut < 0: 
+                total = bull + bear
+                bull = (bull/total)*100
+                bear = (bear/total)*100
+                neut = 0
+            
+            st.caption(f"Bullish: {bull:.1f}%")
+            st.progress(bull/100)
+            st.caption(f"Neutral: {neut:.1f}%")
+            st.progress(neut/100)
+            st.caption(f"Bearish: {bear:.1f}%")
+            st.progress(bear/100)
+
+    # --- ROW 3: Research Summary ---
+    with st.container(border=True):
+        st.markdown("### 📝 Institutional Research Summary")
+        summary_template = f"""
+        Institutional participation in **{stock_name}** appears to be {label.lower()}. 
+        Fresh entries are { 'emerging' if intel['metrics']['new_entrants'] > 0 else 'absent' } 
+        while selling pressure remains { 'significant' if intel['metrics']['exits'] > 0 else 'fragmented' }. 
+        Sector participation indicates that the movement may be { 'part of a broader rotation' if intel['sector_info']['is_rotation'] else 'stock-specific' } into **{intel['sector']}**. 
+        Overall, the stock appears to be in a **{intel['phase']}** phase. 
+        Sustained additions over the coming months will be critical for a trend reversal or continuation.
+        """
+        st.write(summary_template)
+        
+        # Behavior Classification (Feature 6)
+        behaviours = []
+        if intel['metrics']['new_entrants'] > 5: behaviours.append("Herd Entry")
+        elif intel['metrics']['new_entrants'] > 0: behaviours.append("Lone Buyer")
+        if intel['sector_info']['is_rotation']: behaviours.append("Sector Rotation")
+        if intel['metrics']['is_accelerating']: behaviours.append("Broad Accumulation")
+        if intel['metrics']['is_partial_exit']: behaviours.append("Broad Distribution")
+        
+        st.markdown(f"**Current Behaviour:** `{' + '.join(behaviours) if behaviours else 'Passive Holding'}`")
+
+    # --- ROW 4: Timeline & Heatmap ---
+    col_time, col_heat = st.columns(2)
+    
+    with col_time:
+        with st.container(border=True):
+            st.markdown("### 📅 Timeline Narrative")
+            for item in intel['timeline']:
+                st.write(f"**{item['month']}**")
+                st.caption(item['event'])
+
+    with col_heat:
+        with st.container(border=True):
+            st.markdown("### 🌡️ Smart Money Heatmap (AMC)")
+            heat_df = pd.DataFrame(intel['amc_stats'])
+            if not heat_df.empty:
+                st.dataframe(heat_df[['AMC', 'Buying Funds', 'Selling Funds', 'Net Flow', 'Signal']], use_container_width=True, hide_index=True)
+            else:
+                st.write("No AMC-level activity data available.")
+
+    # --- ROW 5: Buyer Categories ---
+    with st.container(border=True):
+        st.markdown("### 👥 Institutional Player Profiles")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.write("🚀 **Aggressive Buyers**")
+            if intel['categories']['aggressive']:
+                for f in intel['categories']['aggressive']: st.caption(f)
+            else: st.caption("None detected")
+        with c2:
+            st.write("🐢 **Quiet Accumulators**")
+            if intel['categories']['quiet']:
+                for f in intel['categories']['quiet']: st.caption(f)
+            else: st.caption("None detected")
+        with c3:
+            st.write("🏃 **Exiting Funds**")
+            if intel['categories']['exiting']:
+                for f in intel['categories']['exiting']: st.caption(f)
+            else: st.caption("None detected")
+
+    st.divider()
+    # --- EXISTING Trajectory Charts ---
+    weight_pivot, shares_pivot, _ = engine.get_stock_detail_with_entrants(stock_name, lookback_months, threshold_pct)
     
     # --- VIEW TOGGLE ---
     view_mode = st.radio(

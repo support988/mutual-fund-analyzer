@@ -235,6 +235,242 @@ class StockActivityEngine:
         
         return summary.sort_values(by='funds_accelerating', ascending=False).reset_index(drop=True)
 
+    def get_institutional_intelligence(self, stock_name: str, lookback_months: int = 3):
+        """
+        Generates 10 features of institutional intelligence for a specific stock.
+        """
+        if self.master_df.empty:
+            return None
+            
+        lookback_months = int(lookback_months)
+        stock_df = self.master_df[self.master_df['stock_name'].str.lower() == stock_name.lower()].copy()
+        if stock_df.empty:
+            return None
+
+        # 1. Basic Metrics
+        latest_date = stock_df['date'].max()
+        curr_month_df = stock_df[stock_df['months_back'] == 0]
+        prev_month_df = stock_df[stock_df['months_back'] == 1]
+        baseline_df = stock_df[stock_df['months_back'] == lookback_months]
+        
+        # New Entrants (Strict: were not in the fund at all during lookback window before current month)
+        prior_holdings = stock_df[(stock_df['months_back'] > 0) & (stock_df['months_back'] <= lookback_months)]
+        prior_funds = prior_holdings[prior_holdings['shares'] > 0]['fund_name'].unique()
+        
+        curr_funds = curr_month_df[curr_month_df['shares'] > 0]
+        new_entrant_list = curr_funds[~curr_funds['fund_name'].isin(prior_funds)]
+        new_entrants_count = len(new_entrant_list)
+        new_entrant_names = new_entrant_list['fund_name'].tolist()
+
+        # Exits
+        baseline_funds = baseline_df[baseline_df['shares'] > 0]['fund_name'].unique()
+        curr_funds_all = curr_month_df[curr_month_df['shares'] > 0]['fund_name'].unique()
+        exit_list = [f for f in baseline_funds if f not in curr_funds_all]
+        exits_count = len(exit_list)
+
+        # Buildup Acceleration check for this specific stock
+        accel_df = self.get_buildup_acceleration(min_funds=1, lookback_months=lookback_months)
+        is_accelerating = not accel_df[accel_df['stock_name'].str.lower() == stock_name.lower()].empty
+        
+        # Herd Entry check
+        herd_df = self.get_herd_entries(min_funds=1, lookback_months=lookback_months)
+        herd_entry_data = herd_df[herd_df['stock_name'].str.lower() == stock_name.lower()]
+        is_herd_entry = not herd_entry_data.empty
+        herd_count = herd_entry_data['funds_entering'].iloc[0] if is_herd_entry else 0
+
+        # Partial Exits check
+        pe_df = self.get_partial_exits(reduction_threshold_pct=30, lookback_months=lookback_months, min_funds=1)
+        is_partial_exit = not pe_df[pe_df['stock_name'].str.lower() == stock_name.lower()].empty
+
+        # 2. Sentiment Score Calculation
+        score = 50
+        # Positive
+        score += new_entrants_count * 10
+        if is_accelerating: score += 15
+        if is_herd_entry: score += 20
+        if is_herd_entry and herd_count > 5: score += 10 # Bonus for large herd
+        
+        # Sector Participation
+        sector_info = self.get_sector_peers_activity(stock_name, lookback_months)
+        if sector_info['is_rotation']: score += 15
+        
+        # Negative
+        if is_partial_exit: score -= 10
+        score -= exits_count * 15
+        
+        # Top Holder Changes
+        weight_pivot, shares_pivot = self.get_stock_detail(stock_name)
+        if not weight_pivot.empty and len(weight_pivot) >= 2:
+            latest_w = weight_pivot.iloc[0]
+            prev_w = weight_pivot.iloc[1]
+            top_3_funds = latest_w.sort_values(ascending=False).head(3).index.tolist()
+            for f in top_3_funds:
+                if f in prev_w.index:
+                    if latest_w[f] > prev_w[f] * 1.05: score += 10 # Top holder adding
+                    if latest_w[f] < prev_w[f] * 0.95: score -= 10 # Top holder reducing
+
+        score = max(0, min(100, score))
+
+        # 3. Accumulation vs Distribution
+        # Compare current shares total vs baseline shares total for funds present in both OR new entrants
+        # Actually, let's just sum all net changes
+        all_funds = set(curr_month_df['fund_name']) | set(baseline_df['fund_name'])
+        added_shares = 0
+        removed_shares = 0
+        
+        s_curr = curr_month_df.set_index('fund_name')['shares'].to_dict()
+        s_base = baseline_df.set_index('fund_name')['shares'].to_dict()
+        
+        for f in all_funds:
+            c = s_curr.get(f, 0)
+            b = s_base.get(f, 0)
+            diff = c - b
+            if diff > 0: added_shares += diff
+            else: removed_shares += abs(diff)
+            
+        acc_ratio = 0
+        if (added_shares + removed_shares) > 0:
+            acc_ratio = (added_shares / (added_shares + removed_shares)) * 100
+
+        # 4. Smart Money Heatmap (AMC)
+        def get_amc(name):
+            # Simple AMC extractor
+            parts = name.split(' ')
+            if len(parts) > 1:
+                # Common multi-word AMCs
+                if parts[0] in ["Invesco", "Aditya", "Baroda", "Motilal", "Franklin", "ICICI", "Kotak", "IDFC", "Canara", "Mirae", "Nippon"]:
+                    if parts[0] == "Aditya" and parts[1] == "Birla": return "Aditya Birla"
+                    if parts[0] == "Invesco" and parts[1] == "India": return "Invesco India"
+                    if parts[0] == "Motilal" and parts[1] == "Oswal": return "Motilal Oswal"
+                    if parts[0] == "Baroda" and parts[1] == "BNP": return "Baroda BNP"
+                    if parts[0] == "Franklin" and parts[1] == "India": return "Franklin India"
+                    if parts[0] == "ICICI" and parts[1] == "Pru": return "ICICI Pru"
+                    if parts[0] == "LIC" and parts[1] == "MF": return "LIC MF"
+                    return parts[0]
+            return parts[0]
+
+        stock_df['amc'] = stock_df['fund_name'].apply(get_amc)
+        amc_latest = stock_df[stock_df['months_back'] == 0]
+        amc_base = stock_df[stock_df['months_back'] == lookback_months]
+        
+        amc_stats = []
+        for amc in stock_df['amc'].unique():
+            c_df = amc_latest[amc_latest['amc'] == amc]
+            b_df = amc_base[amc_base['amc'] == amc]
+            
+            buying = 0
+            selling = 0
+            
+            all_amc_funds = set(c_df['fund_name']) | set(b_df['fund_name'])
+            c_map = c_df.set_index('fund_name')['shares'].to_dict()
+            b_map = b_df.set_index('fund_name')['shares'].to_dict()
+            
+            net_shares = 0
+            for f in all_amc_funds:
+                cv = c_map.get(f, 0)
+                bv = b_map.get(f, 0)
+                if cv > bv: buying += 1
+                elif cv < bv: selling += 1
+                net_shares += (cv - bv)
+            
+            if buying > 0 or selling > 0:
+                signal = "Neutral"
+                if net_shares > 0 and buying > selling: signal = "Strong Buy" if buying > 2 else "Buy"
+                elif net_shares < 0 and selling > buying: signal = "Sell"
+                
+                amc_stats.append({
+                    "AMC": amc,
+                    "Buying Funds": buying,
+                    "Selling Funds": selling,
+                    "Net Flow": "Positive" if net_shares > 0 else "Negative",
+                    "Signal": signal,
+                    "net_shares": net_shares
+                })
+        
+        amc_stats = sorted(amc_stats, key=lambda x: abs(x['net_shares']), reverse=True)
+
+        # 5. Market Phase Detector
+        phase = "Neutral"
+        confidence = 50
+        
+        if new_entrants_count > 0 and exits_count == 0 and acc_ratio > 60:
+            phase = "Accumulation"
+            confidence = acc_ratio
+        elif is_accelerating and acc_ratio > 70:
+            phase = "Markup"
+            confidence = acc_ratio
+        elif is_partial_exit and acc_ratio < 40:
+            phase = "Distribution"
+            confidence = 100 - acc_ratio
+        elif exits_count > 2 and acc_ratio < 30:
+            phase = "Decline"
+            confidence = 100 - acc_ratio
+
+        # 6. Timeline Narrative
+        timeline = []
+        unique_months = sorted(stock_df['months_back'].unique(), reverse=True)
+        for mb in unique_months:
+            m_df = stock_df[stock_df['months_back'] == mb]
+            m_date = m_df['date'].iloc[0].strftime('%b %Y')
+            
+            # Events in this month
+            events = []
+            # Find new entrants in this specific month compared to mb+1
+            if mb < max(unique_months):
+                prev_m_funds = stock_df[stock_df['months_back'] == mb + 1]['fund_name'].unique()
+                curr_m_funds = m_df['fund_name'].unique()
+                new_m = [f for f in curr_m_funds if f not in prev_m_funds]
+                if new_m:
+                    events.append(f"{len(new_m)} new funds entered ({get_amc(new_m[0])}...)")
+                
+                ex_m = [f for f in prev_m_funds if f not in curr_m_funds]
+                if ex_m:
+                    events.append(f"{len(ex_m)} funds exited")
+            
+            if events:
+                timeline.append({"month": m_date, "event": " | ".join(events)})
+            else:
+                timeline.append({"month": m_date, "event": "No significant activity"})
+
+        # 7. Buyer Categories
+        aggressive = []
+        quiet = []
+        exiting_categories = []
+        
+        for f in all_funds:
+            cv = s_curr.get(f, 0)
+            bv = s_base.get(f, 0)
+            if cv > bv * 1.5 and bv > 0: aggressive.append(f)
+            elif cv > bv and cv <= bv * 1.1: quiet.append(f)
+            elif cv < bv * 0.5: exiting_categories.append(f)
+
+        return {
+            "stock_name": stock_name,
+            "sector": stock_df['sector'].iloc[0],
+            "metrics": {
+                "new_entrants": new_entrants_count,
+                "exits": exits_count,
+                "is_accelerating": is_accelerating,
+                "is_partial_exit": is_partial_exit,
+                "is_herd_entry": is_herd_entry,
+                "herd_count": herd_count
+            },
+            "new_entrant_names": new_entrant_names[:5],
+            "exit_names": exit_list[:5],
+            "sentiment_score": score,
+            "acc_ratio": acc_ratio,
+            "amc_stats": amc_stats[:10],
+            "phase": phase,
+            "confidence": confidence,
+            "sector_info": sector_info,
+            "timeline": timeline[-5:], # Last 5 events
+            "categories": {
+                "aggressive": aggressive[:5],
+                "quiet": quiet[:5],
+                "exiting": exiting_categories[:5]
+            }
+        }
+
     def get_partial_exits(self, reduction_threshold_pct=50.0, lookback_months=5, min_funds=2) -> pd.DataFrame:
         if self.master_df.empty:
             return pd.DataFrame()
