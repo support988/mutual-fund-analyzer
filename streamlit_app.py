@@ -13,7 +13,7 @@ from stock_signals_tab import render_stock_signals_tab
 # --- Cached Resource for Stock Activity Engine ---
 @st.cache_resource
 def load_engine():
-    # v1.0.1 - Force refresh for new methods
+    # v1.0.2 - Force refresh for new methods
     from stock_activity_engine import StockActivityEngine
     engine = StockActivityEngine(BASE_DIR)
     engine.load_all()
