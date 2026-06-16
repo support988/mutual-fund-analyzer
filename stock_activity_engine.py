@@ -299,16 +299,18 @@ class StockActivityEngine:
                     if latest_w[f] < prev_w[f] * 0.95: top_holder_deduction += 10
 
         POSITIVE_WEIGHTS = {
-            "new_entrants": 10,
+            "new_entrants": 10,       # capped at 30 total
             "acceleration": 15,
             "herd_entry": 20,
             "large_herd_bonus": 10,
             "sector_rotation": 15,
+            "top_holder_addition_cap": 20,
         }
         NEGATIVE_WEIGHTS = {
             "partial_exit": 15,
-            "per_exit": 15,
-            "top_holder_deduction": 20,
+            "per_exit": 10,            # reduced from 15
+            "exit_cap": 40,            # NEW: symmetric cap, similar magnitude to positive side's max (~75-95)
+            "top_holder_deduction_cap": 20,
             "broad_selling": 20,
         }
 
@@ -322,14 +324,18 @@ class StockActivityEngine:
                 positive_total += POSITIVE_WEIGHTS["large_herd_bonus"]
         if sector_info['is_rotation']:
             positive_total += POSITIVE_WEIGHTS["sector_rotation"]
-        positive_total += min(20, top_holder_addition)
+        positive_total += min(POSITIVE_WEIGHTS["top_holder_addition_cap"], top_holder_addition)
 
         negative_total = 0
         if is_partial_exit:
             negative_total += NEGATIVE_WEIGHTS["partial_exit"]
-        # REMOVE the old min(30, ...) cap — exits must be able to fully offset positives
-        negative_total += exits_count * NEGATIVE_WEIGHTS["per_exit"]
-        negative_total += min(20, top_holder_deduction)
+        # Cap exits at a comparable magnitude to the positive side's realistic max (~75-90)
+        negative_total += min(NEGATIVE_WEIGHTS["exit_cap"], exits_count * NEGATIVE_WEIGHTS["per_exit"])
+        negative_total += min(NEGATIVE_WEIGHTS["top_holder_deduction_cap"], top_holder_deduction)
+
+        # THESE TWO LINES ARE MANDATORY
+        positive_total = min(70, positive_total)
+        negative_total = min(70, negative_total)
 
         net_shift = positive_total - negative_total
         score = 50 + net_shift
@@ -337,7 +343,7 @@ class StockActivityEngine:
 
         print("\n--- SENTIMENT SCORE DEBUG ---")
         print(f"Stock: {stock_name}")
-        print(f"positive_total: {positive_total}, negative_total: {negative_total}, net_shift: {net_shift}, final score: {score}")
+        print(f"positive_total (capped): {positive_total}, negative_total (capped): {negative_total}, net_shift: {net_shift}, final score: {score}")
         print(f"new_entrants: {new_entrants_count}, exits: {exits_count}, accel: {is_accelerating}, herd: {is_herd_entry} ({herd_count} funds)")
         print(f"rotation: {sector_info['is_rotation']}, partial_exit: {is_partial_exit}")
         print(f"top_holder_add: {top_holder_addition}, top_holder_ded: {top_holder_deduction}")

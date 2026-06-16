@@ -306,12 +306,23 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
             
             st.progress(score/100)
             st.markdown(f"**Verdict:** <span style='color:{color}; font-weight:bold; font-size:20px;'>{label}</span>", unsafe_allow_html=True)
+            st.caption(
+                "_Score = 50 + min(70, positive signals) − min(70, negative signals). "
+                "Positive: new entrants (+10 each, max 30), acceleration (+15), herd entry (+20, "
+                "+10 bonus if >5 funds), sector rotation (+15), top holder buying (max +20). "
+                "Negative: partial exit flag (−15), exits (−10 each, max −40), top holder selling (max −20)._"
+            )
             
             st.divider()
             st.markdown("### 🔄 Market Phase")
             st.markdown(f"**Phase:** `{intel['phase']}`")
             st.progress(intel['confidence']/100)
             st.caption(f"Confidence: {intel['confidence']:.1f}%")
+            st.caption(
+                "_Phase inferred from combination of: new entrant count, exit count, acceleration "
+                "status, and accumulation ratio thresholds. Confidence = accumulation ratio or its "
+                "inverse, depending on phase direction._"
+            )
 
     # --- ROW 2: Acc vs Dist & Probability ---
     col_acc, col_prob = st.columns(2)
@@ -332,6 +343,10 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
             elif ar > 40: interp = "Balanced"
             else: interp = "Distribution"
             st.info(f"Verdict: {interp}")
+            st.caption(
+                "_Accumulation % = total shares added ÷ (total shares added + total shares removed), "
+                "across all funds holding this stock within the lookback window._"
+            )
 
     with col_prob:
         with st.container(border=True):
@@ -354,6 +369,11 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
             st.progress(min(1.0, neut/100))
             st.caption(f"Bearish: {bear}%")
             st.progress(min(1.0, bear/100))
+            st.caption(
+                "_Bullish % ≈ sentiment score adjusted by accumulation ratio. "
+                "Bearish % ≈ (100 − sentiment score) adjusted by distribution ratio. "
+                "Derived from the same Institutional Sentiment Score above, not an independent calculation._"
+            )
 
     # --- ROW 3: Research Summary ---
     with st.container(border=True):
@@ -384,7 +404,14 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
                     try:
                         from groq import Groq
                         import os
-                        groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+                        # Standard Streamlit approach: check secrets first (for Cloud), then env (for local)
+                        api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+                        
+                        if not api_key:
+                            st.error("GROQ_API_KEY not found. Please set it in Streamlit Secrets or your .env file.")
+                            st.stop()
+                            
+                        groq_client = Groq(api_key=api_key)
                         prompt = f"""Generate a 3-sentence institutional research summary for {stock_name}.
 Data: Sector={intel['sector']}, Phase={intel['phase']},
 Sentiment={intel['sentiment_score']}/100,
