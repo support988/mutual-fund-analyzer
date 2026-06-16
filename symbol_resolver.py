@@ -1,6 +1,11 @@
+import pandas as pd
+import os
+import re
 from rapidfuzz import process, fuzz
 
-COMMON_MF_NAME_TO_NSE = {
+_SYMBOL_MAP_CSV = None
+_MANUAL_OVERRIDE_DICT = {
+    # Combined from nse_symbol_map.py and price_data_fetcher.py
     "Reliance Industr": "RELIANCE.NS",
     "Reliance Industries": "RELIANCE.NS",
     "HDFC Bank": "HDFCBANK.NS",
@@ -11,10 +16,13 @@ COMMON_MF_NAME_TO_NSE = {
     "TCS": "TCS.NS",
     "Tata Consultancy": "TCS.NS",
     "Bharti Airtel": "BHARTIARTL.NS",
+    "Bharti Airtel PP": "BHARTIARTL.NS",
     "Kotak Mahindra": "KOTAKBANK.NS",
+    "Kotak Mah. Bank": "KOTAKBANK.NS",
     "Axis Bank": "AXISBANK.NS",
     "SBI": "SBIN.NS",
     "State Bank": "SBIN.NS",
+    "State Bank of India": "SBIN.NS",
     "Wipro": "WIPRO.NS",
     "HCL Technologies": "HCLTECH.NS",
     "HCL Tech": "HCLTECH.NS",
@@ -200,7 +208,6 @@ COMMON_MF_NAME_TO_NSE = {
     "New India Assura": "NIACL.NS",
     "Muthoot Finance": "MUTHOOTFIN.NS",
     "M&M Financial": "M&MFIN.NS",
-    "Bajaj Finance": "BAJFINANCE.NS",
     "L&T Finance": "LTF.NS",
     "Manappuram Fin": "MANAPPURAM.NS",
     "IIFL Finance": "IIFL.NS",
@@ -208,7 +215,6 @@ COMMON_MF_NAME_TO_NSE = {
     "CreditAccess": "CREDITACC.NS",
     "Equitas Small": "EQUITASBNK.NS",
     "Ujjivan Small": "UJJIVANSFB.NS",
-    "AU Small Finance": "AUBANK.NS",
     "City Union Bank": "CUB.NS",
     "Karur Vysya": "KARURVYSYA.NS",
     "South Ind.Bank": "SOUTHBANK.NS",
@@ -226,32 +232,68 @@ COMMON_MF_NAME_TO_NSE = {
     "Prism Johnson": "PRSMJOHNSN.NS",
 }
 
-_symbol_cache = {}
+_CACHE = {}
 
-def resolve_nse_symbol(mf_name: str) -> str or None:
-    if mf_name in _symbol_cache:
-        return _symbol_cache[mf_name]
+def _load_csv_map():
+    global _SYMBOL_MAP_CSV
+    if _SYMBOL_MAP_CSV is not None:
+        return _SYMBOL_MAP_CSV
     
-    # 1. Exact match
-    if mf_name in COMMON_MF_NAME_TO_NSE:
-        _symbol_cache[mf_name] = COMMON_MF_NAME_TO_NSE[mf_name]
-        return _symbol_cache[mf_name]
-        
-    # 2. Case-insensitive match
-    mf_name_lower = mf_name.lower()
-    for k, v in COMMON_MF_NAME_TO_NSE.items():
-        if k.lower() == mf_name_lower:
-            _symbol_cache[mf_name] = v
+    possible_paths = [
+        os.path.join(os.getcwd(), "downloads", "stock_symbol_map.csv"),
+        "downloads/stock_symbol_map.csv"
+    ]
+    
+    for p in possible_paths:
+        if os.path.exists(p):
+            try:
+                df = pd.read_csv(p)
+                _SYMBOL_MAP_CSV = {str(k).lower().strip(): v for k, v in zip(df['ngen_name'], df['yf_ticker'])}
+                return _SYMBOL_MAP_CSV
+            except:
+                pass
+    _SYMBOL_MAP_CSV = {}
+    return _SYMBOL_MAP_CSV
+
+def resolve_symbol(stock_name: str) -> str:
+    """
+    Centralized resolver to map NGEN stock names to Yahoo Finance tickers.
+    Order of priority:
+    1. Exact match in manual override dictionary (case-insensitive)
+    2. Exact match in stock_symbol_map.csv
+    3. Fuzzy match against manual override keys (threshold 88)
+    4. Fallback: upper + .NS
+    """
+    name = str(stock_name).strip()
+    name_lower = name.lower()
+    
+    if name_lower in _CACHE:
+        return _CACHE[name_lower]
+    
+    # 1. Manual Override (Exact)
+    for k, v in _MANUAL_OVERRIDE_DICT.items():
+        if k.lower() == name_lower:
+            _CACHE[name_lower] = v
             return v
             
-    # 3. Fuzzy match using rapidfuzz
-    choices = list(COMMON_MF_NAME_TO_NSE.keys())
-    match = process.extractOne(mf_name, choices, scorer=fuzz.WRatio)
-    
+    # 2. CSV Map
+    csv_map = _load_csv_map()
+    if name_lower in csv_map:
+        ticker = csv_map[name_lower]
+        if pd.notna(ticker):
+            _CACHE[name_lower] = ticker
+            return ticker
+            
+    # 3. Fuzzy Match
+    choices = list(_MANUAL_OVERRIDE_DICT.keys())
+    match = process.extractOne(name, choices, scorer=fuzz.WRatio)
     if match and match[1] >= 88:
-        symbol = COMMON_MF_NAME_TO_NSE[match[0]]
-        _symbol_cache[mf_name] = symbol
-        return symbol
+        ticker = _MANUAL_OVERRIDE_DICT[match[0]]
+        _CACHE[name_lower] = ticker
+        return ticker
         
-    _symbol_cache[mf_name] = None
-    return None
+    # 4. Fallback
+    fallback = name.upper().replace(" ", "").replace(".", "").replace("&", "")
+    ticker = f"{fallback}.NS"
+    _CACHE[name_lower] = ticker
+    return ticker

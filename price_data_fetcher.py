@@ -2,70 +2,10 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 import os
-
-_SYMBOL_MAP = None
-
-def _load_symbol_map():
-    global _SYMBOL_MAP
-    if _SYMBOL_MAP is None:
-        # Try multiple possible paths for Cloud vs Local compatibility
-        possible_paths = [
-            os.path.join(os.getcwd(), "downloads", "stock_symbol_map.csv"),
-            os.path.join(os.path.dirname(__file__), "downloads", "stock_symbol_map.csv"),
-            "downloads/stock_symbol_map.csv"
-        ]
-        
-        map_file = None
-        for p in possible_paths:
-            if os.path.exists(p):
-                map_file = p
-                break
-        
-        if map_file:
-            try:
-                df = pd.read_csv(map_file)
-                # Store with lower-case keys for case-insensitive matching
-                _SYMBOL_MAP = {str(k).lower().strip(): v for k, v in zip(df['ngen_name'], df['yf_ticker'])}
-            except Exception as e:
-                _SYMBOL_MAP = {}
-        else:
-            _SYMBOL_MAP = {}
-            
-    # Emergency hardcoded overrides for high-volume stocks (Safety net for Cloud)
-    emergency_overrides = {
-        "bharti airtel": "BHARTIARTL.NS",
-        "bharti airtel pp": "BHARTIARTL.NS",
-        "sbi": "SBIN.NS",
-        "state bank of india": "SBIN.NS",
-        "reliance industries": "RELIANCE.NS",
-        "reliance industr": "RELIANCE.NS",
-        "hdfc bank": "HDFCBANK.NS",
-        "icici bank": "ICICIBANK.NS",
-        "itc": "ITC.NS",
-        "infosys": "INFY.NS",
-        "tcs": "TCS.NS",
-        "tata consultancy": "TCS.NS",
-        "larsen & toubro": "LT.NS",
-        "l&t": "LT.NS"
-    }
-
-    for k, v in emergency_overrides.items():
-        if k not in _SYMBOL_MAP:
-            _SYMBOL_MAP[k] = v
-            
-    return _SYMBOL_MAP
-
-def _get_ticker(stock_name: str) -> str:
-    symbol_map = _load_symbol_map()
-    ticker = symbol_map.get(str(stock_name).lower())
-    if ticker and pd.notna(ticker):
-        return ticker
-    # Fallback logic
-    fallback = str(stock_name).upper().replace(" ", "").replace(".", "")
-    return f"{fallback}.NS"
+from symbol_resolver import resolve_symbol
 
 def get_price_metrics(stock_name: str) -> dict:
-    ticker = _get_ticker(stock_name)
+    ticker = resolve_symbol(stock_name)
     result = {
         "ticker": ticker, "ltp": None,
         "change_1m": None, "change_3m": None, "change_6m": None,

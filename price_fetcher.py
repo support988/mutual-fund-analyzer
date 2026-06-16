@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 import logging
 from datetime import datetime, timedelta
-from nse_symbol_map import resolve_nse_symbol
+from symbol_resolver import resolve_symbol
 from YahooFinanceLoader import YahooFinanceLoader
 
 logger = logging.getLogger(__name__)
@@ -11,7 +11,7 @@ _price_cache = {}
 _extended_cache = {}
 
 def get_price_data(mf_name: str, months_back: int = 14) -> dict or None:
-    symbol = resolve_nse_symbol(mf_name)
+    symbol = resolve_symbol(mf_name)
     if not symbol:
         logger.warning("Yahoo price fetch skipped: requested=%s, error=no Yahoo ticker mapping", mf_name)
         print(f"Yahoo price fetch skipped: requested={mf_name}, error=no Yahoo ticker mapping")
@@ -143,7 +143,7 @@ def get_price_data(mf_name: str, months_back: int = 14) -> dict or None:
         return None
 
 def get_extended_data(mf_name: str) -> dict:
-    symbol = resolve_nse_symbol(mf_name)
+    symbol = resolve_symbol(mf_name)
     if not symbol:
         return {}
     
