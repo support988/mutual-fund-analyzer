@@ -179,8 +179,8 @@ class StockActivityEngine:
             return pd.DataFrame()
             
         # Merge shares data
-        accelerating = accelerating.merge(s_pivot[['stock_name', 'fund_name', 0, lookback_months]], on=['stock_name', 'fund_name'], how='left')
-        accelerating = accelerating.rename(columns={0: 'curr_shares', lookback_months: 'init_shares'})
+        s_subset = s_pivot[['stock_name', 'fund_name', 0, lookback_months]].rename(columns={0: 'curr_shares', lookback_months: 'init_shares'})
+        accelerating = accelerating.merge(s_subset, on=['stock_name', 'fund_name'], how='left')
         
         # Calculate shares change %
         accelerating['shares_change_pct'] = np.where(
