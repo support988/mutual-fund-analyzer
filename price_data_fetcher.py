@@ -87,3 +87,47 @@ def get_price_metrics(stock_name: str) -> dict:
         result["error"] = str(e)
 
     return result
+
+def calculate_active_buy_signal(alloc_change_3m: float, price_change_3m: float, alloc_3m_ago: float) -> dict:
+    if alloc_change_3m > 0 and price_change_3m < 0:
+        return {
+            'signal': 'strong_buy',
+            'score_bonus': 25,
+            'explanation': f"Price fell {abs(price_change_3m):.1f}% but allocation rose {alloc_change_3m:.2f}% -> Fund actively accumulated"
+        }
+    
+    if alloc_change_3m > 0 and price_change_3m > 0:
+        expected_passive = alloc_3m_ago * (price_change_3m / 100.0)
+        active_component = alloc_change_3m - expected_passive
+        
+        if active_component > 0.3:
+            return {
+                'signal': 'active_buy',
+                'score_bonus': 15,
+                'explanation': f"Allocation rose {alloc_change_3m:.2f}% ({active_component:+.2f}% active) while price rose {price_change_3m:.1f}%"
+            }
+        elif active_component >= -0.3:
+            return {
+                'signal': 'passive_drift',
+                'score_bonus': 0,
+                'explanation': f"Allocation change ({alloc_change_3m:+.2f}%) largely matches price movement ({price_change_3m:.1f}%)"
+            }
+        else:
+            return {
+                'signal': 'partial_sell',
+                'score_bonus': -10,
+                'explanation': f"Fund sold some units even as price rose (Active: {active_component:.2f}%)"
+            }
+            
+    if alloc_change_3m <= 0:
+        return {
+            'signal': 'reducing',
+            'score_bonus': -15,
+            'explanation': "Fund is reducing allocation in this stock"
+        }
+        
+    return {
+        'signal': 'none',
+        'score_bonus': 0,
+        'explanation': "Insufficient data for active buy signal"
+    }

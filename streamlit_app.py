@@ -88,10 +88,11 @@ st.sidebar.title("Controls")
 uploaded_files = st.sidebar.file_uploader("Upload MF CSVs", type="csv", accept_multiple_files=True)
 if uploaded_files:
     for uploaded_file in uploaded_files:
-        temp_path = os.path.join(os.getcwd(), f"temp_{uploaded_file.name}")
-        with open(temp_path, "wb") as f:
+        safe_name = os.path.basename(uploaded_file.name)
+        save_path = os.path.join(os.getcwd(), f"temp_{safe_name}")
+        with open(save_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        fund_name = st.session_state.analyzer.add_fund(temp_path)
+        fund_name = st.session_state.analyzer.add_fund(save_path)
     st.session_state.selection_version += 1
     st.sidebar.success("Files processed!")
 

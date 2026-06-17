@@ -3,9 +3,10 @@ import numpy as np
 from mf_parser import parse_mf_csv
 import matplotlib.pyplot as plt
 import io
-import price_fetcher
+import price_data_fetcher
 from collections import Counter
 import os
+import hashlib
 
 class MFAnalyzer:
     def __init__(self):
@@ -13,7 +14,9 @@ class MFAnalyzer:
         self.all_dates = set()
 
     def add_fund(self, file_path):
-        parsed = parse_mf_csv(file_path)
+        with open(file_path, 'rb') as f:
+            file_hash = hashlib.md5(f.read()).hexdigest()
+        parsed = parse_mf_csv(file_path, file_hash)
         if parsed:
             fund_name = parsed['fund_name']
             self.funds[fund_name] = {
@@ -374,7 +377,7 @@ class MFAnalyzer:
 
         fund_signals = []
         for fd in fund_details:
-            signal = price_fetcher.calculate_active_buy_signal(
+            signal = price_data_fetcher.calculate_active_buy_signal(
                 fd['change_3m'],
                 price_change_3m,
                 fd['alloc_3m_ago']
@@ -565,8 +568,29 @@ class MFAnalyzer:
             
             try:
                 # Optimized: Only fetch for top candidates
-                price_data = price_fetcher.get_price_data(stock_name)
-                if price_data:
+                metrics = price_data_fetcher.get_price_metrics(stock_name)
+                if metrics and not metrics.get('error'):
+                    ltp = metrics.get('ltp')
+                    high = metrics.get('52w_high')
+                    pct_below = None
+                    if high and ltp:
+                        pct_below = ((high - ltp) / high) * 100
+                    
+                    price_data = {
+                        'symbol': metrics.get('ticker'),
+                        'current_price': ltp,
+                        'price_change_1m': metrics.get('change_1m') or 0.0,
+                        'price_change_3m': metrics.get('change_3m') or 0.0,
+                        'price_change_6m': metrics.get('change_6m') or 0.0,
+                        'price_52w_high': high,
+                        'price_52w_low': metrics.get('52w_low'),
+                        'pct_below_52w_high': pct_below,
+                        'volume_spike': False,
+                        'latest_volume_spike_date': None,
+                        'volume_spike_ratio': None,
+                        'price_change_since_volume_spike': None,
+                        'days_since_volume_spike': None
+                    }
                     active_buy_signal = self._aggregate_active_buy_signal(
                         p['fund_details'],
                         price_data['price_change_3m']

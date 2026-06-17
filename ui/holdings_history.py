@@ -5,9 +5,30 @@ import glob
 import matplotlib.pyplot as plt
 from datetime import datetime
 import ngen_holdings_history
+import concurrent.futures
 
 def show_holdings_history(analyzer):
     st.header("NGEN Holdings History & Bulk Comparison")
+    
+    # Initialize executor and flags in session state if not present
+    if 'sync_executor' not in st.session_state:
+        st.session_state.sync_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        
+    # Check background task status
+    if st.session_state.get('sync_in_progress', False):
+        future = st.session_state.get('sync_future')
+        if future is not None:
+            if not future.done():
+                st.info("🔄 Download in progress in the background... You can continue using other tabs.")
+                if st.button("🔄 Check Sync Status"):
+                    st.rerun()
+            else:
+                st.session_state.sync_in_progress = False
+                try:
+                    future.result()  # Checks for exceptions
+                    st.success("🎉 Background Download Complete!")
+                except Exception as e:
+                    st.error(f"❌ Background Download failed: {e}")
     
     # 1. Sync Data Section
     with st.expander("🔄 Sync Data from NGEN Markets", expanded=False):
@@ -17,21 +38,21 @@ def show_holdings_history(analyzer):
         equity_only = col3.checkbox("Equity Only", value=True)
         
         if st.button("🚀 Start Download"):
-            cats = ngen_holdings_history.CATEGORIES if category == "ALL" else [category]
-            with st.spinner(f"Downloading data for {len(cats)} categories..."):
-                try:
-                    # Capture stdout to show progress in streamlit if possible, 
-                    # but for now just call run
-                    ngen_holdings_history.run(
-                        categories=cats,
-                        months=months,
-                        out_dir="downloads",
-                        equity_only=equity_only,
-                        delay=0.1
-                    )
-                    st.success("Download Complete!")
-                except Exception as e:
-                    st.error(f"Download failed: {e}")
+            if st.session_state.get('sync_in_progress', False):
+                st.warning("A download is already in progress.")
+            else:
+                cats = ngen_holdings_history.CATEGORIES if category == "ALL" else [category]
+                future = st.session_state.sync_executor.submit(
+                    ngen_holdings_history.run,
+                    categories=cats,
+                    months=months,
+                    out_dir="downloads",
+                    equity_only=equity_only,
+                    delay=0.1
+                )
+                st.session_state.sync_future = future
+                st.session_state.sync_in_progress = True
+                st.rerun()
 
     # 2. Data Loading
     holdings_path = os.path.join("downloads", "holdings")

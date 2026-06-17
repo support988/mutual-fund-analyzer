@@ -2,9 +2,10 @@ import pandas as pd
 import io
 import datetime
 import streamlit as st
+import hashlib
 
 @st.cache_data
-def parse_mf_csv(file_path):
+def parse_mf_csv(file_path, file_hash):
     """
     Parses the specific Mutual Fund CSV format.
     Row 1: Title (Extract fund name)
