@@ -713,3 +713,114 @@ class StockActivityEngine:
             "peers": peers_list,
             "is_rotation": peer_count >= 1
         }
+
+    def get_screener_data(self, entry_threshold_pct: float = 0.5, lookback_months: int = 3,
+                          exit_threshold_pct: float = 30.0, herd_min_funds: int = 2) -> pd.DataFrame:
+        """
+        Unified stock screener: merges all 4 signal outputs into one row per stock.
+
+        Returns a DataFrame containing every stock currently held in the latest month,
+        annotated with signal counts and a composite Signal Score:
+            +1  New Entry funds detected
+            +1  Buildup acceleration detected
+            +1  Herd entry detected
+            -1  Partial exit (fund reduction) detected
+        Stocks are ranked by Signal Score descending.
+        """
+        if self.master_df.empty:
+            return pd.DataFrame()
+
+        # ── Base: all stocks present in the latest month ──────────────────────
+        latest = self.master_df[self.master_df['months_back'] == 0]
+        all_stocks = (
+            latest[['stock_name', 'sector', 'marketcapcat']]
+            .drop_duplicates('stock_name')
+            .copy()
+        )
+
+        # Total funds currently holding each stock
+        holdings_count = (
+            latest.groupby('stock_name')['fund_name']
+            .nunique()
+            .rename('total_funds_holding')
+        )
+        all_stocks = all_stocks.merge(holdings_count, on='stock_name', how='left')
+
+        # ── Signal 1: New Entries ──────────────────────────────────────────────
+        ne_df = self.get_new_entries(
+            threshold_pct=entry_threshold_pct,
+            lookback_months=lookback_months
+        )
+        if not ne_df.empty:
+            ne_agg = (
+                ne_df.groupby('stock_name')
+                .agg(
+                    new_entry_funds=('funds_entering_count', 'first'),
+                    new_entry_avg_weight=('entry_weight', 'mean')
+                )
+                .reset_index()
+            )
+            all_stocks = all_stocks.merge(ne_agg, on='stock_name', how='left')
+        else:
+            all_stocks['new_entry_funds'] = 0
+            all_stocks['new_entry_avg_weight'] = 0.0
+
+        # ── Signal 2: Buildup Acceleration ────────────────────────────────────
+        accel_df = self.get_buildup_acceleration(min_funds=1, lookback_months=lookback_months)
+        if not accel_df.empty:
+            accel_sub = accel_df[['stock_name', 'funds_accelerating', 'avg_recent_delta', 'accumulation_type']].copy()
+            all_stocks = all_stocks.merge(accel_sub, on='stock_name', how='left')
+        else:
+            all_stocks['funds_accelerating'] = 0
+            all_stocks['avg_recent_delta'] = 0.0
+            all_stocks['accumulation_type'] = None
+
+        # ── Signal 3: Partial Exits ────────────────────────────────────────────
+        exits_df = self.get_partial_exits(
+            reduction_threshold_pct=exit_threshold_pct,
+            lookback_months=max(lookback_months, 3),
+            min_funds=1
+        )
+        if not exits_df.empty:
+            exits_sub = exits_df[['stock_name', 'funds_reducing', 'avg_reduction_pct', 'exit_type']].copy()
+            all_stocks = all_stocks.merge(exits_sub, on='stock_name', how='left')
+        else:
+            all_stocks['funds_reducing'] = 0
+            all_stocks['avg_reduction_pct'] = 0.0
+            all_stocks['exit_type'] = None
+
+        # ── Signal 4: Herd Entries ─────────────────────────────────────────────
+        herd_df = self.get_herd_entries(min_funds=herd_min_funds, lookback_months=lookback_months)
+        if not herd_df.empty:
+            herd_sub = herd_df[['stock_name', 'funds_entering', 'avg_entry_weight']].rename(
+                columns={'funds_entering': 'herd_funds', 'avg_entry_weight': 'herd_avg_weight'}
+            )
+            all_stocks = all_stocks.merge(herd_sub, on='stock_name', how='left')
+        else:
+            all_stocks['herd_funds'] = 0
+            all_stocks['herd_avg_weight'] = 0.0
+
+        # ── Normalize types ────────────────────────────────────────────────────
+        int_cols = ['new_entry_funds', 'funds_accelerating', 'funds_reducing', 'herd_funds',
+                    'total_funds_holding']
+        float_cols = ['new_entry_avg_weight', 'avg_recent_delta', 'avg_reduction_pct', 'herd_avg_weight']
+        for c in int_cols:
+            if c in all_stocks.columns:
+                all_stocks[c] = all_stocks[c].fillna(0).astype(int)
+        for c in float_cols:
+            if c in all_stocks.columns:
+                all_stocks[c] = all_stocks[c].fillna(0.0).round(2)
+
+        # ── Composite Signal Score ─────────────────────────────────────────────
+        # +1 per bullish signal firing, -1 if exits detected
+        all_stocks['signal_score'] = (
+            (all_stocks['new_entry_funds'] > 0).astype(int) +
+            (all_stocks['funds_accelerating'] > 0).astype(int) +
+            (all_stocks['herd_funds'] > 0).astype(int) -
+            (all_stocks['funds_reducing'] > 0).astype(int)
+        )
+
+        return all_stocks.sort_values(
+            by=['signal_score', 'new_entry_funds', 'funds_accelerating', 'herd_funds'],
+            ascending=False
+        ).reset_index(drop=True)

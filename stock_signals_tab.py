@@ -21,6 +21,10 @@ def run_partial_exits(_engine, reduction_threshold_pct, lookback_months, min_fun
 def run_herd_entries(_engine, min_funds, lookback_months):
     return _engine.get_herd_entries(min_funds, lookback_months)
 
+@st.cache_data
+def run_screener(_engine, entry_threshold_pct, lookback_months, exit_threshold_pct, herd_min_funds):
+    return _engine.get_screener_data(entry_threshold_pct, lookback_months, exit_threshold_pct, herd_min_funds)
+
 @st.cache_data(ttl=1800)
 def run_institutional_intelligence(_engine, stock_name, lookback_months):
     return _engine.get_institutional_intelligence(stock_name, lookback_months)
@@ -33,12 +37,160 @@ def render_stock_signals_tab(engine: StockActivityEngine):
     st.header("📊 Stock Signals")
     st.caption("Stock-centric intelligence across all fund categories")
     
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab0, tab1, tab2, tab3, tab4 = st.tabs([
+        "🔍 Stock Screener",
         "🆕 New Entries",
-        "📈 Buildup Acceleration", 
+        "📈 Buildup Acceleration",
         "⚠️ Partial Exits",
         "👥 Herd Entries"
     ])
+
+    # Tab 0: Unified Stock Screener
+    with tab0:
+        st.markdown(
+            "**Cross-reference all 4 signal types in one view.** "
+            "A stock appearing across multiple signals = higher conviction opportunity."
+        )
+
+        # ── Parameter Controls ──────────────────────────────────────────────
+        with st.expander("⚙️ Screener Parameters", expanded=True):
+            sc_col1, sc_col2, sc_col3, sc_col4, sc_col5 = st.columns([2, 2, 2, 2, 1])
+            sc_entry_thresh = sc_col1.number_input(
+                "Min Entry Weight (%)", 0.5, 5.0, 0.5, 0.5, key="sc_entry_thresh",
+                help="Minimum allocation % for a fund entry to be counted as a New Entry signal"
+            )
+            sc_lookback = sc_col2.number_input(
+                "Lookback Months", 1, 12, 3, 1, key="sc_lookback",
+                help="How far back to look for entries, acceleration, and herd activity"
+            )
+            sc_exit_thresh = sc_col3.number_input(
+                "Exit Threshold (%)", 10, 90, 30, 5, key="sc_exit_thresh",
+                help="Minimum % reduction from peak weight to count as a Partial Exit signal"
+            )
+            sc_herd_min = sc_col4.number_input(
+                "Min Herd Funds", 2, 20, 3, 1, key="sc_herd_min",
+                help="Minimum number of funds that must enter simultaneously for Herd signal"
+            )
+            run_screener_btn = sc_col5.button(
+                "🚀 Run", key="run_screener", type="primary", use_container_width=True
+            )
+
+        if run_screener_btn:
+            with st.spinner("Running all 4 signal checks across the universe..."):
+                st.session_state["screener_df"] = run_screener(
+                    engine, sc_entry_thresh, sc_lookback, sc_exit_thresh, sc_herd_min
+                )
+
+        screener_df = st.session_state.get("screener_df")
+
+        if screener_df is None:
+            st.info("👆 Set parameters above and click **Run** to scan the full stock universe.")
+
+        elif screener_df.empty:
+            st.warning("No stocks found. Try loosening the parameters.")
+
+        else:
+            # ── Market-wide Signal Summary ───────────────────────────────────
+            n_new   = int((screener_df['new_entry_funds']    > 0).sum())
+            n_accel = int((screener_df['funds_accelerating'] > 0).sum())
+            n_herd  = int((screener_df['herd_funds']         > 0).sum())
+            n_exit  = int((screener_df['funds_reducing']     > 0).sum())
+            n_multi = int((screener_df['signal_score']       >= 2).sum())
+
+            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+            mc1.metric("🆕 New Entry",      f"{n_new} stocks")
+            mc2.metric("📈 Accelerating",   f"{n_accel} stocks")
+            mc3.metric("👥 Herd Entry",     f"{n_herd} stocks")
+            mc4.metric("⚠️ Partial Exit",   f"{n_exit} stocks")
+            mc5.metric("🎯 Multi-Signal",   f"{n_multi} stocks",
+                       help="Stocks scoring ≥ 2 on Signal Score")
+
+            st.divider()
+
+            # ── Live Filters ─────────────────────────────────────────────────
+            with st.container(border=True):
+                st.markdown("**🔧 Filters** — applied instantly on screener results")
+                f1, f2, f3, f4 = st.columns([3, 2, 2, 3])
+
+                all_sectors = sorted(screener_df['sector'].dropna().unique().tolist())
+                sel_sectors = f1.multiselect("Sector", all_sectors, key="sc_sectors")
+
+                all_caps = sorted(screener_df['marketcapcat'].dropna().unique().tolist())
+                sel_caps = f2.multiselect("Market Cap", all_caps, key="sc_caps")
+
+                min_score = f3.slider("Min Signal Score", -1, 3, 0, key="sc_min_score",
+                                     help="-1 = exits only | 0 = any | 1+ = at least one bullish signal | 3 = all 3 bullish")
+
+                with f4:
+                    must_ne    = st.checkbox("Must have New Entry",      key="sc_must_ne")
+                    must_accel = st.checkbox("Must have Acceleration",    key="sc_must_accel")
+                    must_herd  = st.checkbox("Must have Herd Entry",      key="sc_must_herd")
+                    excl_exits = st.checkbox("Exclude stocks with Exits", key="sc_excl_exits")
+
+            # Apply filters
+            filtered = screener_df.copy()
+            if sel_sectors:
+                filtered = filtered[filtered['sector'].isin(sel_sectors)]
+            if sel_caps:
+                filtered = filtered[filtered['marketcapcat'].isin(sel_caps)]
+            filtered = filtered[filtered['signal_score'] >= min_score]
+            if must_ne:    filtered = filtered[filtered['new_entry_funds']    > 0]
+            if must_accel: filtered = filtered[filtered['funds_accelerating'] > 0]
+            if must_herd:  filtered = filtered[filtered['herd_funds']         > 0]
+            if excl_exits: filtered = filtered[filtered['funds_reducing']    == 0]
+
+            st.caption(
+                f"Showing **{len(filtered)}** stocks out of **{len(screener_df)}** "
+                f"in the universe. Click any row to see full Institutional Intelligence."
+            )
+
+            # ── Main Screener Table ──────────────────────────────────────────
+            display_cols = [
+                'stock_name', 'sector', 'marketcapcat', 'total_funds_holding',
+                'signal_score',
+                'new_entry_funds', 'new_entry_avg_weight',
+                'funds_accelerating', 'avg_recent_delta',
+                'herd_funds', 'herd_avg_weight',
+                'funds_reducing', 'avg_reduction_pct'
+            ]
+            display_df = filtered[[c for c in display_cols if c in filtered.columns]].copy()
+
+            sc_event = st.dataframe(
+                display_df,
+                column_config={
+                    "stock_name":           st.column_config.TextColumn("Stock"),
+                    "sector":               st.column_config.TextColumn("Sector"),
+                    "marketcapcat":         st.column_config.TextColumn("Market Cap"),
+                    "total_funds_holding":  st.column_config.NumberColumn("Funds Holding"),
+                    "signal_score":         st.column_config.ProgressColumn(
+                                                "Signal Score", min_value=-1, max_value=3, format="%d"
+                                            ),
+                    "new_entry_funds":      st.column_config.NumberColumn("🆕 New Entry Funds"),
+                    "new_entry_avg_weight": st.column_config.NumberColumn("Avg Entry Wt %", format="%.2f%%"),
+                    "funds_accelerating":   st.column_config.NumberColumn("📈 Accel. Funds"),
+                    "avg_recent_delta":     st.column_config.NumberColumn("Avg Δ Wt %", format="%.2f%%"),
+                    "herd_funds":           st.column_config.NumberColumn("👥 Herd Funds"),
+                    "herd_avg_weight":      st.column_config.NumberColumn("Herd Avg Wt %", format="%.2f%%"),
+                    "funds_reducing":       st.column_config.NumberColumn("⚠️ Reducing Funds"),
+                    "avg_reduction_pct":    st.column_config.NumberColumn("Avg Reduction %", format="%.2f%%"),
+                },
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="df_screener"
+            )
+
+            # CSV export
+            _render_export_button(display_df, "screener")
+
+            # ── Drill-down: Institutional Intelligence ───────────────────────
+            if sc_event.selection and sc_event.selection.get("rows"):
+                selected_stock = filtered.iloc[sc_event.selection["rows"][0]]["stock_name"]
+                st.divider()
+                _render_stock_detail(engine, selected_stock, sc_lookback, sc_entry_thresh)
+            else:
+                st.caption("👆 Click any row above to view the full Institutional Intelligence card")
 
     # Tab 1: New Entries
     with tab1:
@@ -412,19 +564,23 @@ def _render_stock_detail(engine, stock_name, lookback_months, threshold_pct):
                             st.stop()
                             
                         groq_client = Groq(api_key=api_key)
-                        prompt = f"""Generate a 3-sentence institutional research summary for {stock_name}.
-Data: Sector={intel['sector']}, Phase={intel['phase']},
-Sentiment={intel['sentiment_score']}/100,
-New Entrants={intel['metrics']['new_entrants']},
-Exits={intel['metrics']['exits']},
-Accumulation Ratio={intel['acc_ratio']:.1f}%,
-Sector Rotation={intel['sector_info']['is_rotation']},
-Behaviour={' + '.join(behaviours) if behaviours else 'Passive Holding'}.
-Write in the style of a sell-side equity research note. Be specific, use the numbers. No filler phrases."""
+                        prompt = f"""
+You are a senior institutional equity research analyst. Write a detailed, flowing analysis paragraph (150-200 words) about {stock_name} based on the following mutual fund holding data. Do not just list numbers - explain what they mean together and why an investor should care.
+
+Data:
+- Sector={intel['sector']}
+- Phase={intel['phase']}
+- Sentiment={intel['sentiment_score']}/100
+- New Entrants={intel['metrics']['new_entrants']}
+- Exits={intel['metrics']['exits']}
+- Accumulation Ratio={intel['acc_ratio']:.1f}%
+- Sector Rotation={intel['sector_info']['is_rotation']}
+- Behaviour={' + '.join(behaviours) if behaviours else 'Passive Holding'}
+"""
                         response = groq_client.chat.completions.create(
                             model="llama-3.1-8b-instant",
                             messages=[{"role": "user", "content": prompt}],
-                            max_tokens=200
+                            max_tokens=450
                         )
                         st.write(response.choices[0].message.content)
                     except Exception as e:
